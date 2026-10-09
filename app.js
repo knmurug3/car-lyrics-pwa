@@ -32,6 +32,7 @@ let lastClockTick = performance.now();
 let userScrollUntil = 0;
 let needsRecenter = false;
 let toastTimer = null;
+let plainMode = false; // unsynced lyrics on screen: scroll with song progress instead
 
 // UI Elements
 const dom = {
@@ -284,6 +285,7 @@ function startClock() {
       }
       updateProgressBar();
       highlightActiveLyric(currentPositionSec);
+      scrollPlainLyrics();
     }
 
     // Passenger stopped scrolling: bring the current line back into view
@@ -914,7 +916,41 @@ function writeJson(key, value) {
 
 function getCachedLyrics(key) {
   const cache = readJson(LYRICS_CACHE_KEY, {});
-  return cache[key] || null;
+  const entry = cache[key];
+  // Fallback lyrics expire so LRCLIB gets re-checked for a synced version
+  if (!entry || (entry.expiresAt && Date.now() > entry.expiresAt)) return null;
+  return entry;
+}
+
+const FALLBACK_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const FALLBACK_TIMEOUT_MS = 10000;
+
+// Our Vercel function: English-letter lyrics from tamil2lyrics.com for songs LRCLIB lacks
+async function fetchFallbackLyrics(info) {
+  const params = new URLSearchParams({
+    title: info.title,
+    artists: info.artists.join(','),
+    album: info.album
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FALLBACK_TIMEOUT_MS);
+  try {
+    const res = await fetch(`/api/fallback-lyrics?${params}`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.plainLyrics) return null;
+    return {
+      syncedLyrics: null,
+      plainLyrics: data.plainLyrics,
+      source: data.source,
+      sourceUrl: data.url,
+      expiresAt: Date.now() + FALLBACK_TTL_MS
+    };
+  } catch (err) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function cacheLyrics(key, entry) {
@@ -963,9 +999,11 @@ function resolveLyrics(info) {
   // Not tied to a track change: a prefetched search should still finish and be cached
   const controller = new AbortController();
   const promise = findLyrics(buildQuery(info), controller.signal)
-    .then((result) => {
-      if (!result) return null;
-      const entry = { syncedLyrics: result.syncedLyrics || null, plainLyrics: result.plainLyrics || null };
+    .then(async (result) => {
+      const entry = result
+        ? { syncedLyrics: result.syncedLyrics || null, plainLyrics: result.plainLyrics || null }
+        : await fetchFallbackLyrics(info);
+      if (!entry) return null;
       cacheLyrics(info.key, entry);
       return entry;
     })
@@ -984,6 +1022,7 @@ function resetLyricsState() {
   activeLyricId = null;
   needsRecenter = false;
   userScrollUntil = 0;
+  plainMode = false;
   updateTimingControl();
 }
 
@@ -1004,7 +1043,7 @@ async function fetchLyrics(info) {
     updateTimingControl();
     highlightActiveLyric(currentPositionSec);
   } else if (lyricsData?.plainLyrics) {
-    renderPlainLyrics(lyricsData.plainLyrics);
+    renderPlainLyrics(lyricsData.plainLyrics, lyricsData);
   } else {
     const query = buildQuery(info);
     const searchUrl = new URL('https://www.google.com/search');
@@ -1114,10 +1153,19 @@ function renderStateMessage(title, message, action = null) {
   dom.lyricsContainer.scrollTop = 0;
 }
 
-function renderPlainLyrics(plainText) {
+function renderPlainLyrics(plainText, meta = {}) {
   const label = document.createElement('div');
   label.className = 'plain-label';
-  label.textContent = 'Not synced to the music';
+  label.append('Not synced, scrolls with the song');
+  if (meta.source && meta.sourceUrl) {
+    label.append(' · from ');
+    const link = document.createElement('a');
+    link.href = meta.sourceUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = meta.source;
+    label.append(link);
+  }
 
   const nodes = plainText
     .split('\n')
@@ -1132,6 +1180,18 @@ function renderPlainLyrics(plainText) {
 
   dom.lyricsContainer.replaceChildren(label, ...nodes);
   dom.lyricsContainer.scrollTop = 0;
+  plainMode = true;
+}
+
+// Unsynced lyrics: keep the part of the song we're probably at in the middle of the screen
+function scrollPlainLyrics() {
+  if (!plainMode || currentDurationSec <= 0 || Date.now() < userScrollUntil) return;
+  const el = dom.lyricsContainer;
+  const max = el.scrollHeight - el.clientHeight;
+  if (max <= 0) return;
+  const target = max * Math.min(1, currentPositionSec / currentDurationSec);
+  // Ease towards the target so it glides instead of jumping on each poll
+  el.scrollTop += (target - el.scrollTop) * 0.08;
 }
 
 function renderLyrics(lyricItems) {

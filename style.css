@@ -334,6 +334,11 @@ body {
   cursor: default;
 }
 
+.plain-label a {
+  color: var(--text);
+  text-underline-offset: 3px;
+}
+
 .plain-label {
   align-self: flex-start;
   font-size: 0.85rem;

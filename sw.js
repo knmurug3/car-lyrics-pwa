@@ -1,11 +1,11 @@
-const CACHE_NAME = 'carlyrics-v8';
+const CACHE_NAME = 'carlyrics-v9';
 const ASSETS = [
   './',
   './index.html',
-  './style.css?v=8',
-  './app.js?v=8',
-  './vendor/sanscript.min.js?v=8',
-  './vendor/any-ascii.mjs?v=8',
+  './style.css?v=9',
+  './app.js?v=9',
+  './vendor/sanscript.min.js?v=9',
+  './vendor/any-ascii.mjs?v=9',
   './manifest.json'
 ];
 
@@ -31,6 +31,8 @@ self.addEventListener('fetch', (e) => {
 
   // Only the app's own files: Spotify, LRCLIB, fonts and album art go straight to the network
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  // Our API answers are cached by the app itself (and at Vercel's edge)
+  if (url.pathname.startsWith('/api/')) return;
 
   // Stale-while-revalidate: open instantly from cache (weak signal in the car),
   // refresh the cached copy in the background for next time
