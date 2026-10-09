@@ -395,6 +395,9 @@ function simplifyIast(text, script) {
     s = s.replace(/(?<=\p{L}[^aāiīuūeēoōṛ\s\p{P}])a(?![\p{L}\p{M}])/gu, '');
   }
 
+  // Anusvara sounds like "n" before most consonants (thandi, kanda), "m" before p/b/m
+  s = s.replace(/ṃ(?=[kgcjṭḍtdnyrlvśṣsh])/g, 'n');
+
   s = s
     .replace(/ch/g, '\u0001')
     .replace(/c/g, 'ch')
@@ -552,7 +555,50 @@ function normalizeForMatch(text) {
 
 const VARIANT_WORDS = /\b(reloaded|remix|reprise|karaoke|instrumental|cover|lofi|lo fi|slowed|reverb|unplugged|sad|female|male|tamil|telugu|hindi|kannada|malayalam|version|live)\b/;
 
-function scoreCandidate(result, query) {
+// Big films release Tamil, Telugu and Hindi versions with the same title, artist
+// and length, so the lyrics' script is what tells the versions apart.
+const DEFAULT_SONG_LANGUAGE = 'tamil';
+const LANGUAGE_NAMES = {
+  tamil: 'tamil',
+  telugu: 'telugu',
+  devanagari: 'hindi',
+  kannada: 'kannada',
+  malayalam: 'malayalam'
+};
+
+function detectSongLanguage(rawTitle, album) {
+  const text = normalizeForMatch(`${rawTitle} ${album}`);
+  for (const [script, name] of Object.entries(LANGUAGE_NAMES)) {
+    if (new RegExp(`\\b${name}\\b`).test(text)) return script;
+  }
+  return DEFAULT_SONG_LANGUAGE;
+}
+
+function dominantIndicScript(text) {
+  const counts = {};
+  for (const ch of text || '') {
+    const script = scriptOfChar(ch);
+    if (script) counts[script] = (counts[script] || 0) + 1;
+  }
+  let best = null;
+  for (const script in counts) {
+    if (counts[script] >= 10 && (!best || counts[script] > counts[best])) best = script;
+  }
+  return best;
+}
+
+const ENGLISH_STOPWORDS = new Set(('the you i my me your is are and to of in it will be with for on that this ' +
+  'we our not all when what can do just like am was have been from they she he her his there').split(' '));
+
+// English translations read like English prose; Tanglish lines rarely contain these words
+function looksLikeEnglishTranslation(text) {
+  const words = (text || '').replace(/\[[^\]]*\]/g, ' ').toLowerCase().match(/[a-z']+/g) || [];
+  if (words.length < 20) return false;
+  const hits = words.filter(w => ENGLISH_STOPWORDS.has(w)).length;
+  return hits / words.length >= 0.3;
+}
+
+function scoreCandidate(result, query, context = {}) {
   if (!result || (!result.syncedLyrics && !result.plainLyrics)) return -Infinity;
 
   // Duration is the strongest signal: different edits and language versions differ here
@@ -587,9 +633,15 @@ function scoreCandidate(result, query) {
   if (result.syncedLyrics) score += 40;
   else score += 10;
 
-  // Tie-breaker only: prefer lyrics already written in English letters
+  // Prefer the version sung in the song's language (Tamil unless Spotify says otherwise)
   const lyricText = result.syncedLyrics || result.plainLyrics || '';
-  if (!needsRomanization(lyricText)) score += 3;
+  const script = dominantIndicScript(lyricText);
+  if (script) {
+    score += script === query.language ? 15 : -15;
+  } else if (context.hasIndicVersion && looksLikeEnglishTranslation(lyricText)) {
+    // An English translation uploaded in place of the real lyrics
+    score -= 60;
+  }
 
   return score;
 }
@@ -598,10 +650,13 @@ function pickBestLyrics(results, query) {
   let best = null;
   let bestScore = -Infinity;
   const seen = new Set();
+  const context = {
+    hasIndicVersion: results.some(r => r && dominantIndicScript(r.syncedLyrics || r.plainLyrics))
+  };
   for (const r of results) {
     if (!r || seen.has(r.id)) continue;
     seen.add(r.id);
-    const s = scoreCandidate(r, query);
+    const s = scoreCandidate(r, query, context);
     if (s > bestScore) {
       best = r;
       bestScore = s;
@@ -655,14 +710,20 @@ async function findLyrics(query, signal) {
     lrclibFetch('search', { track_name: query.cleanTitle, artist_name: primaryArtist }, signal)
   ]);
   let best = pickBestLyrics(stage1, query);
-  if (best && best.result.syncedLyrics && best.score >= 70) return best.result;
+  if (best && best.result.syncedLyrics && best.score >= 70) {
+    // Only stop early when we already have the right language version
+    const script = dominantIndicScript(best.result.syncedLyrics);
+    const anyIndic = stage1.some(r => r && dominantIndicScript(r.syncedLyrics || r.plainLyrics));
+    if (script === query.language || (!script && !anyIndic)) return best.result;
+  }
   if (signal.aborted) return null;
 
   // Stage 2: broader keyword searches (other artists, shortened title)
   const stage2 = await gatherResults([
     ...artists.slice(1).map(artist => lrclibFetch('search', { track_name: query.cleanTitle, artist_name: artist }, signal)),
     lrclibFetch('search', { q: `${query.shortTitle} ${primaryArtist}` }, signal),
-    lrclibFetch('search', { q: query.shortTitle }, signal)
+    lrclibFetch('search', { q: query.shortTitle }, signal),
+    lrclibFetch('search', { q: `${query.shortTitle} ${LANGUAGE_NAMES[query.language] || ''}` }, signal)
   ]);
   best = pickBestLyrics([...stage1, ...stage2], query);
   return best ? best.result : null;
@@ -689,7 +750,8 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
     shortTitle: cleanTitle.split(' - ')[0].trim(),
     artists: artists.flatMap(a => a.split(/[,;&]/)).map(a => a.trim()).filter(Boolean),
     album,
-    durationSec
+    durationSec,
+    language: detectSongLanguage(title, album)
   };
 
   let lyricsData = null;
