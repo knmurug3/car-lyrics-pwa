@@ -1,0 +1,359 @@
+:root {
+  --bg-color: #0b0c10;
+  --text-active: #ffffff;
+  --text-inactive: rgba(255, 255, 255, 0.28);
+  --text-sub: #8c909a;
+  --spotify-green: #1ed760;
+  --active-glow: rgba(30, 215, 96, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg-color);
+  color: #fff;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Ambient blurred background */
+#ambient-bg {
+  position: fixed;
+  inset: -40px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(80px) brightness(0.22);
+  z-index: 0;
+  transform: scale(1.1);
+  transition: background-image 1.2s ease-in-out;
+}
+
+#ambient-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(11, 12, 16, 0.4) 0%, rgba(11, 12, 16, 0.95) 100%);
+  z-index: 1;
+}
+
+/* App container */
+#app-container {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding-top: env(safe-area-inset-top, 16px);
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+/* Top Car Header */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: rgba(18, 18, 22, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.track-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.album-art {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  background: #222;
+  flex-shrink: 0;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.track-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.artist-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.96);
+}
+
+.btn-primary {
+  background: var(--spotify-green);
+  color: #000;
+}
+
+.btn-glass {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  backdrop-filter: blur(10px);
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffaa00;
+}
+
+.status-dot.playing {
+  background: var(--spotify-green);
+  box-shadow: 0 0 8px var(--spotify-green);
+}
+
+/* Lyrics Container */
+#lyrics-container {
+  flex: 1;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding: 120px 24px 220px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  align-items: center;
+}
+
+/* Hide scrollbar */
+#lyrics-container::-webkit-scrollbar {
+  display: none;
+}
+#lyrics-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Lyric Line Styling */
+.lyric-line {
+  font-size: 1.55rem;
+  font-weight: 600;
+  color: var(--text-inactive);
+  text-align: center;
+  max-width: 900px;
+  line-height: 1.35;
+  transition: color 0.35s ease, transform 0.35s ease, font-size 0.35s ease, text-shadow 0.35s ease;
+  cursor: pointer;
+}
+
+.lyric-line.active {
+  color: var(--text-active);
+  font-size: 2.15rem;
+  font-weight: 800;
+  transform: scale(1.04);
+  text-shadow: 0 0 28px var(--active-glow);
+}
+
+.lyric-line:hover:not(.active) {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Loading & Empty States */
+.state-message {
+  margin: auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  color: var(--text-sub);
+  max-width: 420px;
+  padding: 20px;
+}
+
+.state-message h2 {
+  color: #fff;
+  font-size: 1.35rem;
+}
+
+.state-message p {
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--spotify-green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Bottom In-Car Controls Bar */
+footer {
+  padding: 12px 24px;
+  background: rgba(18, 18, 22, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progress-time {
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: var(--text-sub);
+  width: 36px;
+}
+
+.progress-bar-bg {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  position: relative;
+  cursor: pointer;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--spotify-green);
+  border-radius: 4px;
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+.car-mode-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-sub);
+}
+
+/* QR Code Modal for Passengers */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(10px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal-content {
+  background: #181920;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 28px;
+  text-align: center;
+  max-width: 320px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+
+.modal-content h3 {
+  margin-bottom: 8px;
+}
+
+.modal-content p {
+  font-size: 0.85rem;
+  color: var(--text-sub);
+  margin-bottom: 20px;
+}
+
+#qr-code-img {
+  width: 180px;
+  height: 180px;
+  border-radius: 10px;
+  margin-bottom: 18px;
+  background: #fff;
+  padding: 8px;
+}
+
+@media (max-width: 600px) {
+  .lyric-line {
+    font-size: 1.3rem;
+  }
+  .lyric-line.active {
+    font-size: 1.75rem;
+  }
+}

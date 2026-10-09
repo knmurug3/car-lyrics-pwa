@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="CarLyrics" />
+  
+  <title>CarPlay Lyrics • Passenger Display</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="https://img.icons8.com/color/192/spotify--v1.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Ambient album background -->
+  <div id="ambient-bg"></div>
+  <div id="ambient-overlay"></div>
+
+  <div id="app-container">
+    <!-- Header -->
+    <header>
+      <div class="track-info">
+        <img id="album-art" class="album-art" src="https://img.icons8.com/color/96/spotify--v1.png" alt="Album Art" />
+        <div class="meta">
+          <div id="track-title" class="track-title">CarPlay Lyrics</div>
+          <div id="artist-name" class="artist-name">Connect Spotify or run Demo</div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div id="status-badge" class="status-badge" style="display: none;">
+          <div id="status-dot" class="status-dot"></div>
+          <span id="status-text">Idle</span>
+        </div>
+
+        <button id="demo-btn" class="btn btn-glass">✨ Demo Song</button>
+        <button id="login-btn" class="btn btn-primary">Connect Spotify</button>
+        <button id="qr-btn" class="btn btn-glass" title="Passenger QR Share">📱 Share</button>
+      </div>
+    </header>
+
+    <!-- Synced Lyrics Scroll Area -->
+    <main id="lyrics-container">
+      <div class="state-message">
+        <h2>🎵 Ready for the Road</h2>
+        <p>Connect your Spotify account or tap <strong>✨ Demo Song</strong> above to preview live synchronized karaoke lyrics.</p>
+      </div>
+    </main>
+
+    <!-- In-Car Footer / Progress -->
+    <footer>
+      <div class="progress-container">
+        <span id="time-current" class="progress-time">0:00</span>
+        <div class="progress-bar-bg">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <span id="time-total" class="progress-time">0:00</span>
+      </div>
+
+      <div class="car-mode-badge">
+        <span>🚘 Passenger Mode Active • Screen Keep-Awake ON</span>
+        <span>Synced with Spotify</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Passenger QR Modal -->
+  <div id="qr-modal" class="modal-overlay">
+    <div class="modal-content">
+      <h3>📱 Passenger Screen</h3>
+      <p>Scan with any phone in the car to view these live lyrics on your own screen!</p>
+      <img id="qr-code-img" src="" alt="Passenger QR Code" />
+      <button id="close-qr-btn" class="btn btn-primary" style="width: 100%; justify-content: center;">Done</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
