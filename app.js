@@ -477,6 +477,18 @@ function hideQrCodeModal() {
 // Event Listeners
 // -------------------------------------------------------------
 function setupEventListeners() {
+  const copyUriBtn = document.getElementById('copy-uri-btn');
+  if (copyUriBtn) {
+    copyUriBtn.addEventListener('click', () => {
+      const uri = getRedirectUri();
+      navigator.clipboard.writeText(uri).then(() => {
+        const originalText = copyUriBtn.textContent;
+        copyUriBtn.textContent = '✓ Copied!';
+        setTimeout(() => { copyUriBtn.textContent = originalText; }, 2500);
+      });
+    });
+  }
+
   dom.loginBtn.addEventListener('click', loginWithSpotify);
   dom.demoBtn.addEventListener('click', startDemoMode);
   dom.qrBtn.addEventListener('click', showQrCodeModal);
