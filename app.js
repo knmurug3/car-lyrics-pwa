@@ -1,6 +1,6 @@
 // Spotify App Configuration
 const SPOTIFY_CLIENT_ID = 'f81df8eb9f39460fa7bc321b650279ba';
-const SPOTIFY_SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state';
+const SPOTIFY_SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative user-library-read';
 const SPOTIFY_API = 'https://api.spotify.com/v1';
 const POLL_INTERVAL_MS = 2500;
 const USER_SCROLL_PAUSE_MS = 5000;
@@ -62,8 +62,12 @@ const dom = {
   loginBtn: document.getElementById('login-btn'),
   demoBtn: document.getElementById('demo-btn'),
   qrBtn: document.getElementById('qr-btn'),
-  textSizeBtn: document.getElementById('text-size-btn'),
-  fullscreenBtn: document.getElementById('fullscreen-btn'),
+  menuBtn: document.getElementById('menu-btn'),
+  menuModal: document.getElementById('menu-modal'),
+  menuBody: document.getElementById('menu-body'),
+  closeMenuBtn: document.getElementById('close-menu-btn'),
+  qrText: document.getElementById('qr-text'),
+  stopShareBtn: document.getElementById('stop-share-btn'),
   qrModal: document.getElementById('qr-modal'),
   closeQrBtn: document.getElementById('close-qr-btn'),
   qrCode: document.getElementById('qr-code'),
@@ -97,9 +101,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
   const authError = params.get('error');
+  const join = params.get('join');
 
-  if (code || authError) {
+  if (code || authError || join) {
     window.history.replaceState({}, document.title, window.location.pathname);
+  }
+
+  // A passenger who scanned the driver's code follows that drive (no Spotify needed)
+  if (join && /^[A-Za-z0-9_-]{20,40}$/.test(join)) localStorage.setItem(JOIN_KEY, join);
+  const joinId = localStorage.getItem(JOIN_KEY);
+  if (joinId) {
+    startPassenger(joinId);
+    return;
   }
   if (authError) {
     showToast(authError === 'access_denied'
@@ -295,6 +308,8 @@ async function doRefreshAccessToken() {
 
 function signOut(message) {
   Object.values(TOKEN_KEYS).forEach(k => localStorage.removeItem(k));
+  shareSession = null;
+  localStorage.removeItem(SHARE_KEY);
   accessToken = null;
   refreshToken = null;
   tokenExpiresAt = 0;
@@ -483,6 +498,7 @@ async function pollCurrentlyPlaying() {
       dom.artistName.textContent = info.artists.join(', ');
 
       const artUrl = track.album?.images?.[0]?.url || '';
+      info.artUrl = artUrl;
       if (artUrl) {
         dom.albumArt.src = artUrl;
         dom.ambientBg.style.backgroundImage = `url('${artUrl}')`;
@@ -495,6 +511,7 @@ async function pollCurrentlyPlaying() {
 
     updateProgressBar();
     highlightActiveLyric(currentPositionSec);
+    publishShareState();
   } catch (err) {
     if (isNetworkError(err)) setOffline(true);
     else console.error('Playback poll error:', err);
@@ -522,6 +539,10 @@ async function prefetchNextTrack() {
 async function seekTo(seconds) {
   const target = Math.max(0, seconds - getTimingOffset());
 
+  if (passenger) {
+    showToast('Only the driver\'s phone can jump the song.');
+    return;
+  }
   if (isDemoMode || !isAuthenticated) {
     currentPositionSec = target;
     highlightActiveLyric(currentPositionSec);
@@ -540,6 +561,7 @@ async function seekTo(seconds) {
       lastClockTick = performance.now();
       userScrollUntil = 0;
       highlightActiveLyric(currentPositionSec);
+      publishShareState(true);
     } else if (res && res.status === 403) {
       showToast('Jumping to a line needs Spotify Premium.');
     } else if (res && res.status === 404) {
@@ -553,25 +575,6 @@ async function seekTo(seconds) {
 // -------------------------------------------------------------
 // Romanization: every non-English script is shown in English letters
 // -------------------------------------------------------------
-
-// Unicode blocks -> Sanscript scheme names
-const INDIC_SCRIPTS = [
-  { name: 'devanagari', from: 0x0900, to: 0x097F },
-  { name: 'bengali', from: 0x0980, to: 0x09FF },
-  { name: 'gurmukhi', from: 0x0A00, to: 0x0A7F },
-  { name: 'gujarati', from: 0x0A80, to: 0x0AFF },
-  { name: 'oriya', from: 0x0B00, to: 0x0B7F },
-  { name: 'tamil', from: 0x0B80, to: 0x0BFF },
-  { name: 'telugu', from: 0x0C00, to: 0x0C7F },
-  { name: 'kannada', from: 0x0C80, to: 0x0CFF },
-  { name: 'malayalam', from: 0x0D00, to: 0x0D7F }
-];
-
-function scriptOfChar(ch) {
-  const code = ch.codePointAt(0);
-  if (code < 0x0900 || code > 0x0D7F) return null;
-  return INDIC_SCRIPTS.find(s => code >= s.from && code <= s.to)?.name || null;
-}
 
 // Any letter outside the Latin alphabet (Tamil, Hindi, Korean, Arabic, ...)
 const NON_LATIN_LETTER = /(?!\p{Script=Latin})\p{L}/u;
@@ -782,219 +785,6 @@ function transliterateTamil(text) {
 }
 
 // -------------------------------------------------------------
-// LRCLIB Synced Lyrics Search Engine
-// -------------------------------------------------------------
-
-const LRCLIB_API = 'https://lrclib.net/api';
-const LRCLIB_HEADERS = { 'Lrclib-Client': 'CarLyricsPWA/1.1 (https://github.com/knmurug3/car-lyrics-pwa)' };
-const LYRICS_REQUEST_TIMEOUT_MS = 6000;
-const DURATION_TOLERANCE_SEC = 4;
-
-function cleanSongTitle(title) {
-  if (!title) return '';
-  return title
-    .replace(/[\(\[\{](?:from|feat|ft|ost|soundtrack|original|tamil|telugu|hindi|malayalam|kannada|remastered|lyric).*?[\)\]\}]/gi, '')
-    .replace(/[\(\[\{](?:with|version|reprise).*?[\)\]\}]/gi, '')
-    .replace(/\s-\s*(?:from|ost|soundtrack|original|reprise|version|remastered).*$/gi, '')
-    .replace(/["“”]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeForMatch(text) {
-  return (text || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-}
-
-const VARIANT_WORDS = /\b(reloaded|remix|reprise|karaoke|instrumental|cover|lofi|lo fi|slowed|reverb|unplugged|sad|female|male|tamil|telugu|hindi|kannada|malayalam|version|live)\b/;
-
-// Big films release Tamil, Telugu and Hindi versions with the same title, artist
-// and length, so the lyrics' script is what tells the versions apart.
-const DEFAULT_SONG_LANGUAGE = 'tamil';
-const LANGUAGE_NAMES = {
-  tamil: 'tamil',
-  telugu: 'telugu',
-  devanagari: 'hindi',
-  kannada: 'kannada',
-  malayalam: 'malayalam'
-};
-
-function detectSongLanguage(rawTitle, album) {
-  const text = normalizeForMatch(`${rawTitle} ${album}`);
-  for (const [script, name] of Object.entries(LANGUAGE_NAMES)) {
-    if (new RegExp(`\\b${name}\\b`).test(text)) return script;
-  }
-  return DEFAULT_SONG_LANGUAGE;
-}
-
-function dominantIndicScript(text) {
-  const counts = {};
-  for (const ch of text || '') {
-    const script = scriptOfChar(ch);
-    if (script) counts[script] = (counts[script] || 0) + 1;
-  }
-  let best = null;
-  for (const script in counts) {
-    if (counts[script] >= 10 && (!best || counts[script] > counts[best])) best = script;
-  }
-  return best;
-}
-
-const ENGLISH_STOPWORDS = new Set(('the you i my me your is are and to of in it will be with for on that this ' +
-  'we our not all when what can do just like am was have been from they she he her his there').split(' '));
-
-// English translations read like English prose; Tanglish lines rarely contain these words
-function looksLikeEnglishTranslation(text) {
-  const words = (text || '').replace(/\[[^\]]*\]/g, ' ').toLowerCase().match(/[a-z']+/g) || [];
-  if (words.length < 20) return false;
-  const hits = words.filter(w => ENGLISH_STOPWORDS.has(w)).length;
-  return hits / words.length >= 0.3;
-}
-
-function scoreCandidate(result, query, context = {}) {
-  if (!result || (!result.syncedLyrics && !result.plainLyrics)) return -Infinity;
-
-  // Duration is the strongest signal: different edits and language versions differ here
-  let score = 0;
-  if (query.durationSec > 0 && result.duration) {
-    const diff = Math.abs(result.duration - query.durationSec);
-    if (diff > DURATION_TOLERANCE_SEC) return -Infinity;
-    score += 20 - diff * 3;
-  }
-
-  const wantTitle = normalizeForMatch(query.cleanTitle);
-  const wantShort = normalizeForMatch(query.shortTitle);
-  const gotTitle = normalizeForMatch(result.trackName);
-  let titleMatched = true;
-  if (gotTitle === wantTitle || gotTitle === wantShort) score += 30;
-  else if (gotTitle.includes(wantShort) || wantShort.includes(gotTitle)) score += 15;
-  else titleMatched = false;
-
-  // Penalize remix/language variants unless Spotify's title asks for them
-  const gotVariant = gotTitle.match(VARIANT_WORDS)?.[0];
-  if (gotVariant && !normalizeForMatch(query.rawTitle).includes(gotVariant)) score -= 25;
-
-  const gotArtist = normalizeForMatch(result.artistName);
-  const artistMatched = query.artists.some(a => {
-    const want = normalizeForMatch(a);
-    return want && (gotArtist.includes(want) || want.includes(gotArtist));
-  });
-  if (artistMatched) score += 20;
-
-  if (!titleMatched && !artistMatched) return -Infinity;
-
-  if (result.syncedLyrics) score += 40;
-  else score += 10;
-
-  // Prefer the version sung in the song's language (Tamil unless Spotify says otherwise)
-  const lyricText = result.syncedLyrics || result.plainLyrics || '';
-  const script = dominantIndicScript(lyricText);
-  if (script) {
-    score += script === query.language ? 15 : -15;
-  } else if (context.hasIndicVersion && looksLikeEnglishTranslation(lyricText)) {
-    // An English translation uploaded in place of the real lyrics
-    score -= 60;
-  }
-
-  return score;
-}
-
-function pickBestLyrics(results, query) {
-  let best = null;
-  let bestScore = -Infinity;
-  const seen = new Set();
-  const context = {
-    hasIndicVersion: results.some(r => r && dominantIndicScript(r.syncedLyrics || r.plainLyrics))
-  };
-  for (const r of results) {
-    if (!r || seen.has(r.id)) continue;
-    seen.add(r.id);
-    const s = scoreCandidate(r, query, context);
-    if (s > bestScore) {
-      best = r;
-      bestScore = s;
-    }
-  }
-  return best ? { result: best, score: bestScore } : null;
-}
-
-async function lrclibFetch(path, params, signal, stats = null) {
-  const url = new URL(`${LRCLIB_API}/${path}`);
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LYRICS_REQUEST_TIMEOUT_MS);
-  const onParentAbort = () => controller.abort();
-  signal.addEventListener('abort', onParentAbort);
-
-  if (stats) stats.sent++;
-  try {
-    const res = await fetch(url.toString(), { headers: LRCLIB_HEADERS, signal: controller.signal });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data) ? data : [data];
-  } catch (err) {
-    // No signal (or a request that timed out): not the same as "not found"
-    if (stats && !signal.aborted) stats.failed++;
-    return [];
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener('abort', onParentAbort);
-  }
-}
-
-async function gatherResults(requests) {
-  const settled = await Promise.all(requests);
-  return settled.flat();
-}
-
-// Resolves to { result, offline }: offline when every request failed for lack of signal
-async function findLyrics(query, signal) {
-  const stats = { sent: 0, failed: 0 };
-  const fetchLr = (path, params) => lrclibFetch(path, params, signal, stats);
-  const artists = query.artists.slice(0, 3);
-  const primaryArtist = artists[0] || '';
-  const duration = query.durationSec > 0 ? Math.round(query.durationSec) : undefined;
-
-  // Stage 1: exact match by title + artist + album + duration, plus a targeted search
-  const stage1 = await gatherResults([
-    ...artists.map(artist => fetchLr('get', {
-      track_name: query.cleanTitle,
-      artist_name: artist,
-      album_name: query.album,
-      duration
-    })),
-    fetchLr('search', { track_name: query.cleanTitle, artist_name: primaryArtist })
-  ]);
-  let best = pickBestLyrics(stage1, query);
-  if (best && best.result.syncedLyrics && best.score >= 70) {
-    // Only stop early when we already have the right language version
-    const script = dominantIndicScript(best.result.syncedLyrics);
-    const anyIndic = stage1.some(r => r && dominantIndicScript(r.syncedLyrics || r.plainLyrics));
-    if (script === query.language || (!script && !anyIndic)) return { result: best.result, offline: false };
-  }
-  if (signal.aborted) return { result: null, offline: false };
-  if (stats.sent > 0 && stats.failed === stats.sent) return { result: null, offline: true };
-
-  // Stage 2: broader keyword searches (other artists, shortened title)
-  const stage2 = await gatherResults([
-    ...artists.slice(1).map(artist => fetchLr('search', { track_name: query.cleanTitle, artist_name: artist })),
-    fetchLr('search', { q: `${query.shortTitle} ${primaryArtist}` }),
-    fetchLr('search', { q: query.shortTitle }),
-    fetchLr('search', { q: `${query.shortTitle} ${LANGUAGE_NAMES[query.language] || ''}` })
-  ]);
-  best = pickBestLyrics([...stage1, ...stage2], query);
-  const offline = !best && stats.sent > 0 && stats.failed === stats.sent;
-  return { result: best ? best.result : null, offline };
-}
-
-// -------------------------------------------------------------
 // Lyrics store: IndexedDB (fast, large), memory-only if unavailable
 // -------------------------------------------------------------
 const LYRICS_DB = 'carlyrics';
@@ -1172,6 +962,14 @@ function resolveLyrics(info) {
       return cached;
     }
 
+    // The private lyrics database (playlist sync, other phones' finds, tap-synced lyrics)
+    const fromDb = await fetchFromDatabase(info.key);
+    if (fromDb && typeof fromDb.offset === 'number') applyServerOffset(info.key, fromDb.offset);
+    if (fromDb?.entry) {
+      await cacheLyrics(info.key, fromDb.entry);
+      return fromDb.entry;
+    }
+
     // Not tied to a track change: a prefetched search should still finish and be cached
     const query = buildQuery(info);
     const { result, offline } = await findLyrics(query, new AbortController().signal);
@@ -1197,7 +995,10 @@ function resolveLyrics(info) {
       }
     }
     if (!entry) return null;
-    if (keep) await cacheLyrics(info.key, entry);
+    if (keep) {
+      await cacheLyrics(info.key, entry);
+      saveToDatabase(info.key, { entry });
+    }
     return entry;
   })().catch((err) => {
     console.warn('Lyrics search failed:', err);
@@ -1288,7 +1089,20 @@ function loadOffsets() {
   });
 }
 
+// A nudge saved by any of your devices (only fills in songs this phone hasn't set)
+function applyServerOffset(trackKey, offset) {
+  if (typeof timingOffsets[trackKey] === 'number') return;
+  timingOffsets[trackKey] = offset;
+  writeJson(OFFSETS_KEY, timingOffsets);
+  if (trackKey === currentTrackKey) {
+    activeLyricId = null;
+    updateTimingControl();
+    publishShareState(true); // passengers get the nudge straight away
+  }
+}
+
 function getTimingOffset() {
+  if (passenger) return passenger.offset;
   if (!currentTrackKey || isDemoMode) return 0;
   const saved = timingOffsets[currentTrackKey];
   return typeof saved === 'number' ? saved : DEFAULT_TIMING_OFFSET;
@@ -1302,15 +1116,17 @@ function changeTimingOffset(delta) {
   if (clamped === DEFAULT_TIMING_OFFSET) delete timingOffsets[currentTrackKey];
   else timingOffsets[currentTrackKey] = clamped;
   writeJson(OFFSETS_KEY, timingOffsets);
+  saveToDatabase(currentTrackKey, { offset: clamped });
 
   activeLyricId = null;
   updateTimingControl();
   highlightActiveLyric(currentPositionSec);
+  publishShareState(true);
 }
 
 function updateTimingControl() {
   if (!dom.timing) return;
-  const show = lyrics.length > 0 && !isDemoMode && !syncState;
+  const show = lyrics.length > 0 && !isDemoMode && !syncState && !passenger;
   dom.timing.hidden = !show;
   if (!show) return;
   const offset = getTimingOffset();
@@ -1436,7 +1252,7 @@ function renderPlainLyrics(plainText, meta = {}) {
 }
 
 function updateSyncStart() {
-  if (dom.syncStart) dom.syncStart.hidden = !(plainMode && !syncState && plainLines.length > 0);
+  if (dom.syncStart) dom.syncStart.hidden = !(plainMode && !syncState && plainLines.length > 0 && !passenger);
 }
 
 // Unsynced lyrics: keep the part of the song we're probably at in the middle of the screen
@@ -1626,6 +1442,7 @@ async function finishSync() {
   // Saved for good on this device (no expiry), replacing the unsynced copy
   const entry = { syncedLyrics: lrc, plainLyrics: lines.join('\n'), source: 'you', sourceUrl: meta?.sourceUrl || null };
   await cacheLyrics(trackKey, entry);
+  saveToDatabase(trackKey, { entry });
   if (trackKey !== currentTrackKey) return;
 
   // Taps land after the singer starts: these lyrics run on the default early offset
@@ -1715,35 +1532,437 @@ function applyTextSize() {
   let index = parseInt(localStorage.getItem(TEXT_SIZE_KEY) || '1', 10);
   if (!TEXT_SIZES[index]) index = 1;
   document.documentElement.style.setProperty('--lyric-scale', TEXT_SIZES[index].scale);
-  if (dom.textSizeBtn) {
-    dom.textSizeBtn.title = `Text size: ${TEXT_SIZES[index].label}`;
-    dom.textSizeBtn.setAttribute('aria-label', `Text size: ${TEXT_SIZES[index].label}`);
-  }
   return index;
 }
 
-function cycleTextSize() {
-  const index = (applyTextSize() + 1) % TEXT_SIZES.length;
+function setTextSize(index) {
   localStorage.setItem(TEXT_SIZE_KEY, String(index));
   applyTextSize();
-  showToast(`Text size: ${TEXT_SIZES[index].label}`);
   // Keep the current line centred at the new size
   setTimeout(scrollToActiveLine, 50);
 }
 
-function setupFullscreen() {
-  const standalone = window.matchMedia('(display-mode: standalone)').matches;
-  if (!dom.fullscreenBtn || !document.fullscreenEnabled || standalone) return;
-  dom.fullscreenBtn.hidden = false;
-  const update = () => {
-    dom.fullscreenBtn.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
+// -------------------------------------------------------------
+// Backend: private lyrics database, playlist sync, live share
+// -------------------------------------------------------------
+const SHARE_KEY = 'carlyrics_share';
+const JOIN_KEY = 'carlyrics_join';
+const SHARE_HEARTBEAT_MS = 10000;
+
+let shareSession = readJson(SHARE_KEY, null); // driver: { id, expiresAt }
+let lastPublished = null; // { key, isPlaying, position, offset, at }
+let passenger = null; // { id, ownerName, state, offset, haveKey, timer }
+let librarySync = null; // { running, stop, text }
+
+function hasScope(scope) {
+  return grantedScopes.split(' ').includes(scope);
+}
+
+// Our own API, signed in with the Spotify token (the server checks it with Spotify)
+async function apiFetch(path, { method = 'GET', body = null, auth = true } = {}) {
+  const headers = {};
+  if (auth) {
+    if (Date.now() > tokenExpiresAt - 60000) await refreshAccessToken();
+    if (!accessToken) return null;
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  if (body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let data = null;
+  try { data = await res.json(); } catch (err) {}
+  return { status: res.status, ok: res.ok, data };
+}
+
+// ---- Lyrics database ----
+
+// { entry, offset } from the database, { offset } when only a timing nudge exists,
+// null when it has nothing, { offline } without signal
+async function fetchFromDatabase(trackKey) {
+  if (!isAuthenticated && !passenger) return null;
+  const params = new URLSearchParams({ id: trackKey });
+  if (passenger) params.set('session', passenger.id);
+  try {
+    const res = await apiFetch(`/api/lyrics?${params}`, { auth: !passenger });
+    if (!res) return null;
+    if (res.ok) return { entry: res.data.entry, offset: res.data.offset };
+    if (res.status === 404 && res.data && typeof res.data.offset === 'number') return { offset: res.data.offset };
+    return null;
+  } catch (err) {
+    return isNetworkError(err) ? { offline: true } : null;
+  }
+}
+
+function saveToDatabase(trackKey, payload) {
+  if (!isAuthenticated || passenger || isDemoMode) return;
+  apiFetch('/api/lyrics', { method: 'POST', body: { id: trackKey, ...payload } }).catch(() => {});
+}
+
+// ---- Playlist sync ----
+
+async function spotifyGetJson(pathOrUrl) {
+  const path = pathOrUrl.startsWith(SPOTIFY_API) ? pathOrUrl.slice(SPOTIFY_API.length) : pathOrUrl;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await spotifyFetch(path);
+    if (!res) return null;
+    if (res.status === 429) {
+      const wait = parseInt(res.headers.get('Retry-After') || '3', 10);
+      await new Promise(r => setTimeout(r, Math.min(wait, 30) * 1000));
+      continue;
+    }
+    if (!res.ok) return null; // e.g. Spotify-owned playlists this app may not read
+    return res.json();
+  }
+  return null;
+}
+
+function trackFromSpotify(track) {
+  if (!track || track.type !== 'track' || track.is_local || !track.id) return null;
+  return {
+    id: track.id,
+    title: track.name,
+    artists: (track.artists || []).map(a => a.name),
+    album: track.album?.name || '',
+    durationSec: track.duration_ms / 1000
   };
-  dom.fullscreenBtn.addEventListener('click', () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+async function collectLibraryTracks(onProgress) {
+  const tracks = new Map();
+  const add = (t) => { const info = trackFromSpotify(t); if (info) tracks.set(info.id, info); };
+
+  // Liked songs
+  let next = '/me/tracks?limit=50';
+  while (next && !librarySync?.stop) {
+    const page = await spotifyGetJson(next);
+    if (!page) break;
+    page.items.forEach(item => add(item.track));
+    onProgress(`Reading liked songs… ${tracks.size} songs`);
+    next = page.next;
+  }
+
+  // Every playlist you own or follow
+  const playlists = [];
+  next = '/me/playlists?limit=50';
+  while (next && !librarySync?.stop) {
+    const page = await spotifyGetJson(next);
+    if (!page) break;
+    playlists.push(...page.items.filter(Boolean));
+    next = page.next;
+  }
+  const fields = 'next,items(track(id,name,type,is_local,duration_ms,artists(name),album(name)))';
+  for (let i = 0; i < playlists.length && !librarySync?.stop; i++) {
+    next = `/playlists/${playlists[i].id}/tracks?limit=100&fields=${encodeURIComponent(fields)}`;
+    while (next && !librarySync?.stop) {
+      const page = await spotifyGetJson(next);
+      if (!page) break;
+      page.items.forEach(item => add(item.track));
+      next = page.next;
+    }
+    onProgress(`Reading playlists… ${i + 1} of ${playlists.length} · ${tracks.size} songs`);
+  }
+  return [...tracks.values()];
+}
+
+async function syncLibrary() {
+  if (librarySync?.running) return;
+  if (!isAuthenticated) return showToast('Connect Spotify first.');
+  if (!hasScope('playlist-read-private') || !hasScope('user-library-read')) {
+    return showToast('Reconnect Spotify once so the app can read your playlists.', { label: 'Reconnect', onClick: loginWithSpotify });
+  }
+
+  librarySync = { running: true, stop: false, text: 'Reading your playlists…' };
+  const progress = (text) => { librarySync.text = text; renderLibraryStatus(); };
+  renderLibraryStatus();
+
+  try {
+    const tracks = await collectLibraryTracks(progress);
+    for (let i = 0; i < tracks.length && !librarySync.stop; i += 400) {
+      const res = await apiFetch('/api/library?action=enqueue', { method: 'POST', body: { tracks: tracks.slice(i, i + 400) } });
+      if (!res?.ok) throw new Error(res?.data?.error || 'Could not reach the lyrics database');
+    }
+
+    // The server finds lyrics a few songs at a time; keep asking until the queue is empty
+    let found = 0;
+    while (!librarySync.stop) {
+      const res = await apiFetch('/api/library?action=process', { method: 'POST' });
+      if (!res?.ok) throw new Error(res?.data?.error || 'Could not reach the lyrics database');
+      if (res.data.busy) {
+        progress(`Another device is syncing… ${res.data.queued} songs left`);
+        await new Promise(r => setTimeout(r, 8000));
+        continue;
+      }
+      found += res.data.found;
+      progress(`Finding lyrics… ${res.data.remaining} songs left · ${found} found so far`);
+      if (!res.data.remaining) break;
+    }
+    librarySync = { running: false, text: librarySync.stop ? 'Sync paused. It continues by itself once a day.' : 'Your playlists are synced.' };
+  } catch (err) {
+    librarySync = { running: false, text: isNetworkError(err) ? 'Lost signal. Sync again when you are back online.' : err.message };
+  }
+  renderLibraryStatus();
+  refreshLibraryStats();
+}
+
+async function refreshLibraryStats() {
+  if (!isAuthenticated) return;
+  try {
+    const res = await apiFetch('/api/library?action=status');
+    if (res?.ok) {
+      librarySync = librarySync || { running: false };
+      librarySync.stats = res.data;
+      renderLibraryStatus();
+    }
+  } catch (err) {}
+}
+
+// ---- Live share: driver ----
+
+function shareActive() {
+  return Boolean(shareSession && shareSession.expiresAt > Date.now());
+}
+
+async function startShare() {
+  const res = await apiFetch('/api/session?action=create', { method: 'POST' });
+  if (!res?.ok) throw new Error(res?.data?.error || 'Could not start sharing');
+  shareSession = { id: res.data.id, expiresAt: res.data.expiresAt };
+  writeJson(SHARE_KEY, shareSession);
+  lastPublished = null;
+  publishShareState(true);
+  return shareSession;
+}
+
+async function endShare() {
+  const session = shareSession;
+  shareSession = null;
+  localStorage.removeItem(SHARE_KEY);
+  if (session) apiFetch('/api/session?action=end', { method: 'POST', body: { id: session.id } }).catch(() => {});
+}
+
+function joinUrl(id) {
+  return `${getRedirectUri()}?join=${encodeURIComponent(id)}`;
+}
+
+// Send the current song and position when something changed, plus a heartbeat
+function publishShareState(force = false) {
+  if (!shareActive() || !isAuthenticated || isDemoMode || !currentTrackInfo) return;
+  const now = Date.now();
+  const offset = getTimingOffset();
+  if (!force && lastPublished) {
+    const expected = lastPublished.position + (lastPublished.isPlaying ? (now - lastPublished.at) / 1000 : 0);
+    const changed = lastPublished.key !== currentTrackKey
+      || lastPublished.isPlaying !== isPlaying
+      || lastPublished.offset !== offset
+      || Math.abs(expected - currentPositionSec) > 2;
+    if (!changed && now - lastPublished.at < SHARE_HEARTBEAT_MS) return;
+  }
+  lastPublished = { key: currentTrackKey, isPlaying, position: currentPositionSec, offset, at: now };
+  const info = currentTrackInfo;
+  apiFetch('/api/session?action=update', {
+    method: 'POST',
+    body: {
+      id: shareSession.id,
+      state: {
+        key: info.key,
+        title: info.title,
+        artists: info.artists,
+        album: info.album,
+        artUrl: info.artUrl || '',
+        durationSec: currentDurationSec,
+        progressSec: currentPositionSec,
+        isPlaying,
+        offset
+      }
+    }
+  }).then((res) => {
+    if (res && res.status === 404) { shareSession = null; localStorage.removeItem(SHARE_KEY); }
+  }).catch(() => {});
+}
+
+// ---- Live share: passenger ----
+
+function startPassenger(id) {
+  passenger = { id, ownerName: '', state: null, offset: DEFAULT_TIMING_OFFSET, haveKey: null, timer: null };
+  document.body.classList.add('passenger');
+  dom.loginBtn.hidden = true;
+  dom.statusBadge.hidden = false;
+  dom.statusText.textContent = 'Joining…';
+  renderStateMessage('Joining the drive', 'Lyrics show up here as soon as the driver plays a song.');
+  pollPassenger();
+  passenger.timer = setInterval(pollPassenger, POLL_INTERVAL_MS);
+}
+
+function leavePassenger(message) {
+  if (!passenger) return;
+  clearInterval(passenger.timer);
+  passenger = null;
+  localStorage.removeItem(JOIN_KEY);
+  document.body.classList.remove('passenger');
+  isPlaying = false;
+  currentTrackKey = null;
+  resetLyricsState();
+  dom.statusBadge.hidden = true;
+  dom.loginBtn.hidden = false;
+  renderStateMessage(message || 'You left the drive', 'Connect your own Spotify, or scan the driver\'s code again to follow along.');
+}
+
+async function pollPassenger() {
+  if (!passenger || document.hidden || pollInFlight) return;
+  pollInFlight = true;
+  try {
+    const params = new URLSearchParams({ id: passenger.id });
+    if (passenger.haveKey) params.set('have', passenger.haveKey);
+    const sentAt = performance.now();
+    const res = await apiFetch(`/api/session?${params}`, { auth: false });
+    if (!passenger) return;
+    setOffline(false);
+    if (res.status === 404) return leavePassenger('This share has ended');
+    if (!res.ok) return;
+
+    const data = res.data;
+    passenger.ownerName = data.ownerName;
+    const state = data.state;
+    if (!state || !state.key) {
+      setPlaybackStatus(false, `Following ${data.ownerName}`);
+      if (!hasSeenTrack) renderStateMessage(`Following ${data.ownerName}`, 'Lyrics show up here as soon as they play a song.');
+      return;
+    }
+
+    passenger.state = state;
+    passenger.offset = Number.isFinite(state.offset) ? state.offset : DEFAULT_TIMING_OFFSET;
+    const latencySec = state.isPlaying ? (performance.now() - sentAt) / 2000 : 0;
+    currentPositionSec = data.position + latencySec;
+    currentDurationSec = state.durationSec;
+    lastClockTick = performance.now();
+    setPlaybackStatus(state.isPlaying, `Following ${data.ownerName}`);
+
+    if (state.key !== currentTrackKey) {
+      currentTrackKey = state.key;
+      hasSeenTrack = true;
+      const info = { key: state.key, title: state.title, artists: state.artists, album: state.album, durationSec: state.durationSec };
+      currentTrackInfo = info;
+      dom.trackTitle.textContent = info.title;
+      dom.artistName.textContent = info.artists.join(', ');
+      if (state.artUrl) {
+        dom.albumArt.src = state.artUrl;
+        dom.ambientBg.style.backgroundImage = `url('${state.artUrl}')`;
+        applyAccentFromArt(state.artUrl);
+      }
+      passenger.haveKey = state.key;
+      if (data.lyrics) {
+        // The server sent this song's lyrics along with the state
+        const requestId = ++lyricsRequestId;
+        resetLyricsState();
+        cacheLyrics(info.key, data.lyrics);
+        renderLyricsData(info, data.lyrics, requestId);
+      } else {
+        fetchLyrics(info);
+      }
+    }
+    updateProgressBar();
+    highlightActiveLyric(currentPositionSec);
+  } catch (err) {
+    if (isNetworkError(err)) setOffline(true);
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+// ---- Menu sheet ----
+
+function openMenu() {
+  renderMenu();
+  dom.menuModal.classList.add('open');
+  refreshLibraryStats();
+}
+
+function closeMenu() {
+  dom.menuModal.classList.remove('open');
+}
+
+function menuSection(title, ...children) {
+  const section = document.createElement('section');
+  section.className = 'menu-section';
+  const h = document.createElement('h4');
+  h.textContent = title;
+  section.append(h, ...children);
+  return section;
+}
+
+function menuButton(label, onClick, variant = 'btn-quiet') {
+  const btn = document.createElement('button');
+  btn.className = `btn ${variant}`;
+  btn.textContent = label;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function menuText(text, className = 'menu-text') {
+  const p = document.createElement('p');
+  p.className = className;
+  p.textContent = text;
+  return p;
+}
+
+function renderMenu() {
+  const sections = [];
+
+  // Text size: one tap per size
+  const sizes = document.createElement('div');
+  sizes.className = 'segmented';
+  const current = applyTextSize();
+  TEXT_SIZES.forEach((size, i) => {
+    const btn = menuButton(size.label, () => { setTextSize(i); renderMenu(); }, i === current ? 'btn-primary' : 'btn-quiet');
+    btn.setAttribute('aria-pressed', String(i === current));
+    sizes.append(btn);
   });
-  document.addEventListener('fullscreenchange', update);
-  update();
+  const display = [sizes];
+  if (document.fullscreenEnabled && !window.matchMedia('(display-mode: standalone)').matches) {
+    display.push(menuButton(document.fullscreenElement ? 'Exit full screen' : 'Full screen', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(() => {});
+      closeMenu();
+    }));
+  }
+  sections.push(menuSection('Display', ...display));
+
+  if (passenger) {
+    sections.push(menuSection('Passenger',
+      menuText(`Following ${passenger.ownerName || 'the driver'}'s music.`),
+      menuButton('Stop following', () => { leavePassenger(); closeMenu(); })));
+  } else if (isAuthenticated) {
+    const status = document.createElement('div');
+    status.id = 'library-status';
+    sections.push(menuSection('Lyrics library',
+      menuText('Finds lyrics for every song in your playlists and liked songs, so they load instantly on every device.'),
+      status));
+
+    sections.push(menuSection('Sharing', shareActive()
+      ? menuText(`Passengers can follow along until ${new Date(shareSession.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`)
+      : menuText('Tap Share to let passengers follow your music and lyrics.'),
+      ...(shareActive() ? [menuButton('Stop sharing', () => { endShare(); renderMenu(); })] : [])));
+
+    sections.push(menuSection('Spotify', menuButton('Sign out', () => { endShare(); signOut('You signed out.'); closeMenu(); })));
+  }
+
+  dom.menuBody.replaceChildren(...sections);
+  renderLibraryStatus();
+}
+
+function renderLibraryStatus() {
+  const el = document.getElementById('library-status');
+  if (!el) return;
+  const nodes = [];
+  const stats = librarySync?.stats;
+  if (stats && stats.total) {
+    nodes.push(menuText(`${stats.total} songs · ${stats.withLyrics} with lyrics · ${stats.missing} not found yet`, 'menu-stat'));
+  }
+  if (librarySync?.text) nodes.push(menuText(librarySync.text, 'menu-progress'));
+  if (librarySync?.running) {
+    nodes.push(menuButton('Pause sync', () => { librarySync.stop = true; librarySync.text = 'Pausing…'; renderLibraryStatus(); }));
+  } else {
+    nodes.push(menuButton(stats?.total ? 'Sync again' : 'Sync my playlists', syncLibrary, 'btn-primary'));
+  }
+  el.replaceChildren(...nodes);
 }
 
 // -------------------------------------------------------------
@@ -1803,12 +2022,36 @@ function startDemoMode() {
 // -------------------------------------------------------------
 // Passenger QR Code Sharing (generated on the device)
 // -------------------------------------------------------------
-function showQrCodeModal() {
-  if (typeof qrcode === 'function') {
-    const qr = qrcode(0, 'M');
-    qr.addData(getRedirectUri());
-    qr.make();
-    dom.qrCode.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+function drawQr(url) {
+  if (typeof qrcode !== 'function') return;
+  const qr = qrcode(0, 'M');
+  qr.addData(url);
+  qr.make();
+  dom.qrCode.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+}
+
+async function showQrCodeModal() {
+  dom.stopShareBtn.hidden = true;
+  if (passenger) {
+    drawQr(joinUrl(passenger.id));
+    dom.qrText.textContent = 'Pass it on: anyone who scans this follows the same drive.';
+  } else if (isAuthenticated && !isDemoMode) {
+    dom.qrCode.replaceChildren();
+    dom.qrText.textContent = 'Starting live share…';
+    dom.qrModal.classList.add('open');
+    try {
+      const session = shareActive() ? shareSession : await startShare();
+      drawQr(joinUrl(session.id));
+      const until = new Date(session.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      dom.qrText.textContent = `Passengers scan this to follow your music and lyrics, no Spotify needed. Works until ${until}.`;
+      dom.stopShareBtn.hidden = false;
+    } catch (err) {
+      dom.qrText.textContent = isNetworkError(err) ? 'No signal right now. Try again in a moment.' : err.message;
+    }
+    return;
+  } else {
+    drawQr(getRedirectUri());
+    dom.qrText.textContent = 'Scan to open CarLyrics on another phone. Connect Spotify first to share live lyrics with passengers.';
   }
   dom.qrModal.classList.add('open');
 }
@@ -1839,8 +2082,10 @@ function setupEventListeners() {
 
   dom.timingEarlier.addEventListener('click', () => changeTimingOffset(0.5));
   dom.timingLater.addEventListener('click', () => changeTimingOffset(-0.5));
-  dom.textSizeBtn.addEventListener('click', cycleTextSize);
-  setupFullscreen();
+  dom.menuBtn.addEventListener('click', openMenu);
+  dom.closeMenuBtn.addEventListener('click', closeMenu);
+  dom.menuModal.addEventListener('click', (e) => { if (e.target === dom.menuModal) closeMenu(); });
+  dom.stopShareBtn.addEventListener('click', () => { endShare(); hideQrCodeModal(); showToast('Stopped sharing.'); });
 
   const placeholderArt = dom.albumArt.getAttribute('src');
   dom.albumArt.addEventListener('error', () => {
@@ -1863,13 +2108,13 @@ function setupEventListeners() {
 
   // Catch up straight away when the screen comes back on or signal returns
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) pollCurrentlyPlaying();
+    if (!document.hidden) passenger ? pollPassenger() : pollCurrentlyPlaying();
   });
-  window.addEventListener('online', () => pollCurrentlyPlaying());
+  window.addEventListener('online', () => (passenger ? pollPassenger() : pollCurrentlyPlaying()));
 
   // Another open copy of the app signed in, renewed or signed out
   window.addEventListener('storage', (e) => {
-    if (!Object.values(TOKEN_KEYS).includes(e.key)) return;
+    if (!Object.values(TOKEN_KEYS).includes(e.key) || passenger) return;
     adoptStoredTokens();
     if (refreshToken && !isAuthenticated) onSpotifyAuthenticated();
     if (!refreshToken && !accessToken && isAuthenticated) signOut('Signed out in another window.');

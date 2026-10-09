@@ -19,5 +19,16 @@
         }
       ]
     }
+  ],
+  "functions": {
+    "api/library.js": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/library?action=cron",
+      "schedule": "0 10 * * *"
+    }
   ]
 }

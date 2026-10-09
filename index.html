@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="style.css?v=10" />
+  <link rel="stylesheet" href="style.css?v=11" />
 </head>
 <body>
   <!-- Ambient album background -->
@@ -48,9 +48,8 @@
           <span id="status-text">Idle</span>
         </div>
         <button id="login-btn" class="btn btn-primary">Connect<span class="wide-only"> Spotify</span></button>
-        <button id="text-size-btn" class="btn btn-quiet btn-icon" title="Text size" aria-label="Text size">Aa</button>
-        <button id="fullscreen-btn" class="btn btn-quiet wide-screen-only" hidden>Full screen</button>
-        <button id="qr-btn" class="btn btn-quiet" title="Open these lyrics on another phone">Share</button>
+        <button id="qr-btn" class="btn btn-quiet" title="Let passengers follow along">Share</button>
+        <button id="menu-btn" class="btn btn-quiet" aria-haspopup="dialog">Menu</button>
       </div>
     </aside>
 
@@ -92,20 +91,33 @@
   <!-- Passenger QR Modal -->
   <div id="qr-modal" class="modal-overlay">
     <div class="modal-content" role="dialog" aria-labelledby="qr-title">
-      <h3 id="qr-title">Open on another phone</h3>
-      <p>Scan to open CarLyrics on another phone, then connect it to the same Spotify account that is playing.</p>
-      <div id="qr-code" class="qr-code" role="img" aria-label="QR code for this app"></div>
+      <h3 id="qr-title">Share with passengers</h3>
+      <p id="qr-text"></p>
+      <div id="qr-code" class="qr-code" role="img" aria-label="QR code to follow this drive"></div>
       <button id="close-qr-btn" class="btn btn-primary btn-block">Done</button>
+      <button id="stop-share-btn" class="btn btn-link btn-block" hidden>Stop sharing</button>
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=10"></script>
-  <script src="vendor/qrcode.min.js?v=10"></script>
-  <script src="vendor/nosleep.min.js?v=10"></script>
+  <!-- Menu: text size, full screen, lyrics library, sharing, account -->
+  <div id="menu-modal" class="modal-overlay menu-overlay">
+    <div class="menu-sheet" role="dialog" aria-labelledby="menu-title">
+      <div class="menu-head">
+        <h3 id="menu-title">Menu</h3>
+        <button id="close-menu-btn" class="btn btn-quiet">Close</button>
+      </div>
+      <div id="menu-body" class="menu-body"></div>
+    </div>
+  </div>
+
+  <script src="vendor/sanscript.min.js?v=11"></script>
+  <script src="vendor/qrcode.min.js?v=11"></script>
+  <script src="vendor/nosleep.min.js?v=11"></script>
   <script type="module">
-    import anyAscii from './vendor/any-ascii.mjs?v=10';
+    import anyAscii from './vendor/any-ascii.mjs?v=11';
     window.anyAscii = anyAscii;
   </script>
-  <script src="app.js?v=10"></script>
+  <script src="lib/lyrics-engine.js?v=11"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>
