@@ -1,14 +1,18 @@
-const CACHE_NAME = 'carlyrics-v14';
+const CACHE_NAME = 'carlyrics-v16';
 const ASSETS = [
   './',
-  './style.css?v=14',
-  './app.js?v=14',
-  './lib/lyrics-engine.js?v=14',
-  './vendor/sanscript.min.js?v=14',
-  './vendor/any-ascii.mjs?v=14',
-  './vendor/qrcode.min.js?v=14',
-  './vendor/nosleep.min.js?v=14',
-  './manifest.json'
+  './style.css?v=16',
+  './app.js?v=16',
+  './lib/lyrics-engine.js?v=16',
+  './vendor/sanscript.min.js?v=16',
+  './vendor/any-ascii.mjs?v=16',
+  './vendor/qrcode.min.js?v=16',
+  './vendor/nosleep.min.js?v=16',
+  './manifest.json',
+  './brand/mark.svg',
+  './brand/cover-placeholder.svg',
+  './brand/icon-192.png',
+  './brand/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', (e) => {

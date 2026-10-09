@@ -74,7 +74,9 @@ function buildQuery(track) {
 // or only another language's version
 async function lookUp(track) {
   const query = buildQuery(track);
-  const { result } = await findLyrics(query, new AbortController().signal);
+  const { result, busy } = await findLyrics(query, new AbortController().signal);
+  // LRCLIB busy: synced lyrics may exist, so retry later instead of settling for less
+  if (busy) throw Object.assign(new Error('LRCLIB is busy'), { lrclibBusy: true });
   let entry = result
     ? { syncedLyrics: result.syncedLyrics || null, plainLyrics: result.plainLyrics || null, source: 'LRCLIB', sourceUrl: 'https://lrclib.net' }
     : null;
@@ -118,10 +120,12 @@ async function processQueue(maxTracks) {
     );
     if (!rows.length) break;
     await Promise.all(rows.map(row => processOne(row, totals).catch(async (err) => {
-      console.warn('lookup failed', row.id, err.message);
+      if (err.lrclibBusy) totals.lrclibBusy = true;
+      else console.warn('lookup failed', row.id, err.message);
       await q(`UPDATE ${t('tracks')} SET status = 'queued', updated_at = now() WHERE id = $1`, [row.id]);
     })));
     totals.processed += rows.length;
+    if (totals.lrclibBusy) break; // give LRCLIB a break; the phone or the daily job carries on
   }
 
   const { rows } = await q(`SELECT count(*)::int AS n FROM ${t('tracks')} WHERE status IN ('queued', 'processing')`);

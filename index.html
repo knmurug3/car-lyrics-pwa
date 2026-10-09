@@ -3,19 +3,30 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#111214" />
+  <meta name="theme-color" content="#0F1115" />
+  <meta name="description" content="Paadu shows live lyrics for whatever is playing on Spotify, big and in English letters, for every seat in the car." />
   <meta name="color-scheme" content="dark" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="CarLyrics" />
+  <meta name="apple-mobile-web-app-title" content="Paadu" />
 
-  <title>CarLyrics</title>
+  <title>Paadu</title>
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Paadu" />
+  <meta property="og:title" content="Paadu: sing every line of the drive" />
+  <meta property="og:description" content="Live lyrics for every seat in the car, in English letters." />
+  <meta property="og:url" content="https://carlyricspwa.vercel.app/" />
+  <meta property="og:image" content="https://carlyricspwa.vercel.app/brand/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="icon" type="image/svg+xml" href="brand/mark.svg" />
   <link rel="manifest" href="manifest.json" />
-  <link rel="apple-touch-icon" href="https://img.icons8.com/color/192/spotify--v1.png" />
+  <link rel="apple-touch-icon" href="brand/apple-touch-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="style.css?v=14" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Outfit:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <!-- Ambient album background -->
@@ -26,11 +37,11 @@
   <div id="app">
     <!-- Now playing: top bar on phones, side panel on landscape screens -->
     <aside class="now-playing">
-      <img id="album-art" class="album-art" src="https://img.icons8.com/color/512/spotify--v1.png" alt="Album art" />
+      <img id="album-art" class="album-art" src="brand/cover-placeholder.svg" alt="Album art" />
 
       <div class="meta">
-        <div id="track-title" class="track-title">CarLyrics</div>
-        <div id="artist-name" class="artist-name">Live lyrics for the passenger seat</div>
+        <div id="track-title" class="track-title">Paadu</div>
+        <div id="artist-name" class="artist-name">Sing every line of the drive</div>
       </div>
 
       <div class="progress">
@@ -49,7 +60,7 @@
           <span id="status-text">Idle</span>
         </div>
         <button id="login-btn" class="btn btn-primary">Connect<span class="wide-only"> Spotify</span></button>
-        <button id="qr-btn" class="btn btn-quiet" title="Let passengers follow along">Share</button>
+        <button id="qr-btn" class="btn btn-quiet" title="Let passengers follow along" hidden>Share</button>
         <button id="menu-btn" class="btn btn-quiet" aria-haspopup="dialog">Menu</button>
       </div>
     </aside>
@@ -64,8 +75,12 @@
     </div>
     <main id="lyrics-container">
       <div class="state-message welcome">
-        <h1>Lyrics that keep up with the road</h1>
-        <p>Connect Spotify and every song shows up here, synced and in English letters.</p>
+        <div class="brand-lockup">
+          <img src="brand/mark.svg" alt="" width="56" height="56" />
+          <span class="wordmark">paadu</span>
+        </div>
+        <h1>Sing every line of the drive.</h1>
+        <p>Connect Spotify and every song shows up here, synced, big and in English letters, for every seat in the car.</p>
         <div class="welcome-actions">
           <button id="demo-btn" class="btn btn-outline">Try a demo song</button>
           <button id="copy-uri-btn" class="btn btn-link" title="For setting up your own Spotify developer app">Copy redirect URI</button>
@@ -108,7 +123,7 @@
 
   <!-- First-run guide -->
   <div id="guide" class="modal-overlay menu-overlay">
-    <div class="menu-sheet guide-sheet" role="dialog" aria-label="Welcome to CarLyrics">
+    <div class="menu-sheet guide-sheet" role="dialog" aria-label="Welcome to Paadu">
       <div id="guide-body" class="guide-body"></div>
     </div>
   </div>
@@ -124,14 +139,14 @@
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=14"></script>
-  <script src="vendor/qrcode.min.js?v=14"></script>
-  <script src="vendor/nosleep.min.js?v=14"></script>
+  <script src="vendor/sanscript.min.js?v=16"></script>
+  <script src="vendor/qrcode.min.js?v=16"></script>
+  <script src="vendor/nosleep.min.js?v=16"></script>
   <script type="module">
-    import anyAscii from './vendor/any-ascii.mjs?v=14';
+    import anyAscii from './vendor/any-ascii.mjs?v=16';
     window.anyAscii = anyAscii;
   </script>
-  <script src="lib/lyrics-engine.js?v=14"></script>
-  <script src="app.js?v=14"></script>
+  <script src="lib/lyrics-engine.js?v=16"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>

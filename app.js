@@ -332,6 +332,7 @@ function signOut(message) {
   clearInterval(pollInterval);
 
   dom.loginBtn.hidden = false;
+  dom.qrBtn.hidden = true;
   dom.statusBadge.hidden = true;
   updateReconnectBanner();
   if (message) renderStateMessage('Signed out of Spotify', message);
@@ -342,6 +343,7 @@ function onSpotifyAuthenticated() {
   isAuthenticated = true;
 
   dom.loginBtn.hidden = true;
+  dom.qrBtn.hidden = false;
   dom.statusBadge.hidden = false;
   dom.statusText.textContent = 'Connected';
   updateReconnectBanner();
@@ -989,7 +991,7 @@ function resolveLyrics(info) {
 
     // Not tied to a track change: a prefetched search should still finish and be cached
     const query = buildQuery(info);
-    const { result, offline } = await findLyrics(query, new AbortController().signal);
+    const { result, offline, busy } = await findLyrics(query, new AbortController().signal);
     if (offline) return { offline: true };
 
     let entry = result
@@ -1010,6 +1012,14 @@ function resolveLyrics(info) {
       } else if (fallback) {
         entry = fallback;
       }
+    }
+    // LRCLIB was busy: synced lyrics may exist after all. Show any fallback for now,
+    // keep it only briefly on this phone, and don't put it in the shared database
+    if (busy) {
+      if (!entry) return { busy: true };
+      const brief = { ...entry, expiresAt: Date.now() + 30 * 60 * 1000 };
+      await cacheLyrics(info.key, brief);
+      return brief;
     }
     if (!entry) return null;
     if (keep) {
@@ -1061,6 +1071,9 @@ function renderLyricsData(info, lyricsData, requestId) {
   if (lyricsData?.offline) {
     // No signal: show it, and try again as soon as the network is back
     renderStateMessage('Waiting for signal', 'Lyrics will load as soon as you are back in coverage.');
+    scheduleLyricsRetry(info, requestId);
+  } else if (lyricsData?.busy) {
+    renderStateMessage('Lyrics are on their way', 'The lyrics library is busy right now. Trying again in a moment.');
     scheduleLyricsRetry(info, requestId);
   } else if (lyricsData?.syncedLyrics) {
     lyrics = parseLRC(lyricsData.syncedLyrics, requestId);
@@ -1851,6 +1864,11 @@ async function syncLibrary() {
     while (!librarySync.stop) {
       const res = await apiFetch('/api/library?action=process', { method: 'POST' });
       if (!res?.ok) throw new Error(res?.data?.error || 'Could not reach the lyrics database');
+      if (res.data.lrclibBusy) {
+        progress(`The lyrics library is busy. Waiting a minute… ${res.data.remaining} songs left`);
+        await new Promise(r => setTimeout(r, 60000));
+        continue;
+      }
       if (res.data.busy) {
         progress(`Another device is syncing… ${res.data.queued} songs left`);
         await new Promise(r => setTimeout(r, 8000));
@@ -1950,6 +1968,7 @@ function startPassenger(id) {
   passenger = { id, ownerName: '', state: null, offset: DEFAULT_TIMING_OFFSET, haveKey: null, timer: null };
   document.body.classList.add('passenger');
   dom.loginBtn.hidden = true;
+  dom.qrBtn.hidden = false;
   dom.statusBadge.hidden = false;
   dom.statusText.textContent = 'Joining…';
   renderStateMessage('Joining the drive', 'Lyrics show up here as soon as the driver plays a song.');
@@ -1968,6 +1987,7 @@ function leavePassenger(message) {
   resetLyricsState();
   dom.statusBadge.hidden = true;
   dom.loginBtn.hidden = false;
+  dom.qrBtn.hidden = true;
   renderStateMessage(message || 'You left the drive', 'Connect your own Spotify, or scan the driver\'s code again to follow along.');
 }
 
@@ -2319,7 +2339,7 @@ function applyNight() {
   const setting = nightSetting();
   const on = setting === 'on' || (setting === 'auto' && (hour >= 19 || hour < 6));
   document.body.classList.toggle('night', on);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', on ? '#09090b' : '#111214');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', on ? '#0A0B0E' : '#0F1115');
 }
 
 // ---- Haptics: a tiny buzz confirms a tap without looking (Android) ----
@@ -2330,7 +2350,7 @@ function haptic(ms = 12) {
 // ---- First-run guide ----
 const GUIDE_KEY = 'carlyrics_onboarded_v1';
 const GUIDE_STEPS = [
-  { title: 'Lyrics for the road', text: 'Connect Spotify and the lyrics follow your music, in English letters, big enough to read from the back seat.' },
+  { title: 'Welcome to Paadu', text: 'Connect Spotify and the lyrics follow your music, in English letters, big enough to read from the back seat.' },
   { title: 'Share with passengers', text: 'Tap Share and let passengers scan the code. They follow your music and lyrics on their own phone, no Spotify needed.' },
   { title: 'Lyrics a little off?', text: 'Tap the line being sung. That fixes the timing for this song on every device.' }
 ];
@@ -2471,7 +2491,7 @@ async function showQrCodeModal() {
     return;
   } else {
     drawQr(getRedirectUri());
-    dom.qrText.textContent = 'Scan to open CarLyrics on another phone. Connect Spotify first to share live lyrics with passengers.';
+    dom.qrText.textContent = 'Scan to open Paadu on another phone. Connect Spotify first to share live lyrics with passengers.';
   }
   dom.qrModal.classList.add('open');
 }

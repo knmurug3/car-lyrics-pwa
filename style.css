@@ -1,13 +1,13 @@
 :root {
-  --bg: #111214;
+  --bg: #0F1115;
   --surface: rgba(24, 25, 29, 0.72);
   --border: rgba(255, 255, 255, 0.08);
-  --text: #f4f4f5;
-  --text-sub: #a1a1aa;
+  --text: #F5F1E8;
+  --text-sub: #A39E93;
   --text-dim: rgba(244, 244, 245, 0.38);
   --text-past: rgba(244, 244, 245, 0.18);
-  --accent: #1db954;
-  --accent-ink: #0b1f12;
+  --accent: #F2A93B;
+  --accent-ink: #1A1206;
   --radius: 999px;
   --radius-art: 14px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -61,7 +61,7 @@ body {
 #ambient-overlay {
   position: fixed;
   inset: 0;
-  background: linear-gradient(180deg, rgba(17, 18, 20, 0.35) 0%, rgba(17, 18, 20, 0.85) 100%);
+  background: linear-gradient(180deg, rgba(15, 17, 21, 0.35) 0%, rgba(15, 17, 21, 0.86) 100%);
   z-index: 1;
   pointer-events: none;
 }
@@ -1082,4 +1082,65 @@ body.night .btn-primary {
   #ambient-bg-2 {
     transition: none;
   }
+}
+
+/* ---------------------------------------------------------------
+   Paadu brand (v15)
+   --------------------------------------------------------------- */
+:root {
+  --font-brand: "Bricolage Grotesque", "Outfit", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.brand-lockup img {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+.wordmark {
+  font-family: var(--font-brand);
+  font-weight: 800;
+  font-size: 2.6rem;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  color: var(--text);
+}
+
+/* Headings speak in the brand voice; lyrics stay in Outfit for reading */
+.state-message h1,
+.state-message h2,
+.guide-body h3,
+.menu-head h3,
+.modal-content h3 {
+  font-family: var(--font-brand);
+  letter-spacing: -0.025em;
+}
+
+.state-message.welcome h1 {
+  font-size: clamp(2rem, 4.2vw, 3.2rem);
+  line-height: 1.05;
+}
+
+.track-title {
+  letter-spacing: -0.015em;
+}
+
+/* Warm night mode to match the paper-white text */
+body.night {
+  --text: #CFC9BE;
+  --text-sub: #7F7A71;
+  --text-dim: rgba(207, 201, 190, 0.34);
+}
+
+.state-message h1,
+.state-message h2,
+.guide-body h3 {
+  text-wrap: balance;
 }

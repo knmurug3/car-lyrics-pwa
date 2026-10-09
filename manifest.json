@@ -1,22 +1,36 @@
 {
-  "name": "CarPlay Lyrics",
-  "short_name": "CarLyrics",
+  "name": "Paadu: sing every line of the drive",
+  "short_name": "Paadu",
   "start_url": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#111214",
-  "theme_color": "#111214",
-  "description": "Real-time synchronized Spotify lyrics for in-car passenger display.",
+  "background_color": "#0F1115",
+  "theme_color": "#0F1115",
+  "description": "Live lyrics for whatever is playing on Spotify, big and in English letters, for every seat in the car.",
   "icons": [
     {
-      "src": "https://img.icons8.com/color/192/spotify--v1.png",
+      "src": "brand/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
-      "src": "https://img.icons8.com/color/512/spotify--v1.png",
+      "src": "brand/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "brand/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "brand/mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ]
 }
