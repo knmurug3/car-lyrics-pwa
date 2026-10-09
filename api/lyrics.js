@@ -2,11 +2,12 @@
 //
 // GET  /api/lyrics?id=<trackKey>                 (Spotify sign-in, or &session=<shareId>)
 //      -> 200 { entry, offset } | 404 { offset }
-// POST /api/lyrics { id, entry?, offset? }       (Spotify sign-in)
-//      saves lyrics found on a phone, tap-synced lyrics, or a timing nudge
+// POST /api/lyrics { id, entry?, offset?, anchors? }  (Spotify sign-in)
+//      saves lyrics found on a phone, tap-synced lyrics, a timing nudge,
+//      or taps that pin unsynced lines to moments in the song
 
 const { q, t } = require('../lib/db');
-const { saveEntry, getEntry, setOffset, validId } = require('../lib/store');
+const { saveEntry, getEntry, setOffset, setAnchors, validId } = require('../lib/store');
 const { send, query, readJson, rateLimited, spotifyUser, handle } = require('../lib/http');
 
 async function canRead(req, params) {
@@ -27,9 +28,9 @@ module.exports = handle(async (req, res) => {
     if (await rateLimited(req, 'lyrics-get', 1200, 3600)) return send(res, 429, { error: 'too many requests' });
     if (!(await canRead(req, params))) return send(res, 401, { error: 'sign in with Spotify' });
 
-    const { entry, offset } = await getEntry(id);
-    if (!entry) return send(res, 404, { error: 'not found', offset });
-    return send(res, 200, { entry, offset });
+    const { entry, offset, anchors } = await getEntry(id);
+    if (!entry) return send(res, 404, { error: 'not found', offset, anchors });
+    return send(res, 200, { entry, offset, anchors });
   }
 
   if (req.method === 'POST') {
@@ -41,6 +42,7 @@ module.exports = handle(async (req, res) => {
     if (!validId(body.id)) return send(res, 400, { error: 'id is required' });
 
     if (typeof body.offset === 'number' && Number.isFinite(body.offset)) await setOffset(body.id, body.offset);
+    if (Array.isArray(body.anchors)) await setAnchors(body.id, body.anchors);
     let saved = null;
     if (body.entry) {
       saved = await saveEntry(body.id, body.entry, { force: body.entry.source === 'you' });

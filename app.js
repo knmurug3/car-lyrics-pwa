@@ -48,6 +48,7 @@ let plainLines = []; // text of the unsynced lyrics on screen (for tap-to-sync)
 let lyricsRetryTimer = null;
 let syncState = null; // tap-to-sync session: { lines, times, index, meta, trackKey }
 let plainMeta = {}; // source of the unsynced lyrics on screen
+let jumpNextScroll = true; // first positioning after new lyrics: jump, don't race
 
 // UI Elements
 const dom = {
@@ -378,7 +379,6 @@ function startClock() {
       }
       updateProgressBar();
       highlightActiveLyric(currentPositionSec);
-      scrollPlainLyrics();
     }
 
     // Passenger stopped scrolling: bring the current line back into view
@@ -965,6 +965,7 @@ function resolveLyrics(info) {
     // The private lyrics database (playlist sync, other phones' finds, tap-synced lyrics)
     const fromDb = await fetchFromDatabase(info.key);
     if (fromDb && typeof fromDb.offset === 'number') applyServerOffset(info.key, fromDb.offset);
+    if (fromDb?.anchors) applyRemoteAnchors(info.key, fromDb.anchors);
     if (fromDb?.entry) {
       await cacheLyrics(info.key, fromDb.entry);
       return fromDb.entry;
@@ -1016,6 +1017,7 @@ function resetLyricsState() {
   needsRecenter = false;
   userScrollUntil = 0;
   plainMode = false;
+  plainInfo = null;
   clearTimeout(lyricsRetryTimer);
   exitSyncMode(false);
   updateSyncStart();
@@ -1048,7 +1050,7 @@ function renderLyricsData(info, lyricsData, requestId) {
     updateTimingControl();
     highlightActiveLyric(currentPositionSec);
   } else if (lyricsData?.plainLyrics) {
-    renderPlainLyrics(lyricsData.plainLyrics, lyricsData);
+    renderPlainLyrics(lyricsData.plainLyrics, lyricsData, info, requestId);
   } else {
     const query = buildQuery(info);
     const searchUrl = new URL('https://www.google.com/search');
@@ -1126,7 +1128,7 @@ function changeTimingOffset(delta) {
 
 function updateTimingControl() {
   if (!dom.timing) return;
-  const show = lyrics.length > 0 && !isDemoMode && !syncState && !passenger;
+  const show = lyrics.length > 0 && !isDemoMode && !syncState && !passenger && !plainMode;
   dom.timing.hidden = !show;
   if (!show) return;
   const offset = getTimingOffset();
@@ -1222,48 +1224,173 @@ function sourceCredit(meta) {
   return credit;
 }
 
-function renderPlainLyrics(plainText, meta = {}) {
+// -------------------------------------------------------------
+// Unsynced lyrics: estimated line timing, corrected by taps
+// -------------------------------------------------------------
+// Each line gets an estimated start time from how long it is to sing, after a
+// typical intro and before a typical outro. Tapping the line being sung pins it
+// to that moment ("anchor"); lines between anchors are re-spread to fit.
+const ANCHORS_KEY = 'carlyrics_anchors_v1';
+const MAX_ANCHORS = 60;
+let anchorsByTrack = readJson(ANCHORS_KEY, {}); // trackKey -> [{ line, time }]
+let plainInfo = null; // track the unsynced lyrics on screen belong to
+
+// Roughly how long a line takes to sing: its letters, plus a breath between lines
+function lineWeight(text) {
+  return 6 + (text.match(/\p{L}/gu) || []).length;
+}
+
+function cleanAnchors(anchors, lineCount) {
+  const valid = (Array.isArray(anchors) ? anchors : [])
+    .filter(a => Number.isInteger(a?.line) && a.line >= 0 && a.line < lineCount && Number.isFinite(a.time) && a.time >= 0)
+    .sort((a, b) => a.line - b.line);
+  // Times must rise with the lines; drop any that don't
+  const out = [];
+  valid.forEach((a) => { if (!out.length || a.time > out[out.length - 1].time) out.push({ line: a.line, time: a.time }); });
+  return out;
+}
+
+function estimateLineTimes(lines, durationSec, anchors = []) {
+  const n = lines.length;
+  const dur = durationSec > 0 ? durationSec : 240;
+  const cum = [0];
+  lines.forEach((line, i) => cum.push(cum[i] + lineWeight(line)));
+  const weight = (a, b) => cum[b] - cum[a];
+
+  // Typical intro and outro have no lyrics
+  const start = Math.min(dur * 0.08, 12);
+  const end = dur - Math.min(dur * 0.06, 10);
+  const pinned = cleanAnchors(anchors, n);
+
+  // Seconds per unit of line length: from the taps when there are two or more
+  let rate = (end - start) / weight(0, n);
+  if (pinned.length >= 2) {
+    const first = pinned[0];
+    const last = pinned[pinned.length - 1];
+    const w = weight(first.line, last.line);
+    if (w > 0) rate = (last.time - first.time) / w;
+  }
+
+  const knots = [];
+  if (!pinned.length) knots.push({ line: 0, time: start });
+  else if (pinned[0].line > 0) knots.push({ line: 0, time: Math.max(0, pinned[0].time - weight(0, pinned[0].line) * rate) });
+  knots.push(...pinned);
+  const last = knots[knots.length - 1];
+  const finish = pinned.length ? last.time + weight(last.line, n) * rate : end;
+  knots.push({ line: n, time: Math.max(Math.min(finish, dur), last.time + 0.5) });
+
+  const times = new Array(n);
+  for (let k = 0; k < knots.length - 1; k++) {
+    const a = knots[k];
+    const b = knots[k + 1];
+    const span = weight(a.line, b.line) || 1;
+    for (let i = a.line; i < b.line; i++) times[i] = a.time + (weight(a.line, i) / span) * (b.time - a.time);
+  }
+  return times;
+}
+
+function getAnchors(trackKey) {
+  return Array.isArray(anchorsByTrack[trackKey]) ? anchorsByTrack[trackKey] : [];
+}
+
+function setAnchors(trackKey, anchors, { save = false } = {}) {
+  anchorsByTrack[trackKey] = anchors;
+  writeJson(ANCHORS_KEY, anchorsByTrack);
+  if (save) saveToDatabase(trackKey, { anchors });
+  if (plainMode && plainInfo?.key === trackKey) refreshEstimate();
+}
+
+// Anchors from the database or the driver's share fill in songs this phone hasn't tapped
+function applyRemoteAnchors(trackKey, anchors) {
+  if (!Array.isArray(anchors) || !anchors.length) return;
+  if (getAnchors(trackKey).length && !passenger) return;
+  if (JSON.stringify(getAnchors(trackKey)) === JSON.stringify(anchors)) return;
+  setAnchors(trackKey, anchors);
+}
+
+function refreshEstimate() {
+  const times = estimateLineTimes(plainLines, plainInfo?.durationSec || currentDurationSec, getAnchors(plainInfo?.key));
+  lyrics.forEach((line, i) => { line.timestamp = times[i]; });
+  updatePlainLabel();
+  activeLyricId = null;
+  highlightActiveLyric(currentPositionSec);
+}
+
+// "This line is being sung right now"
+function markLineSung(index) {
+  if (!plainInfo || plainInfo.key !== currentTrackKey) return;
+  const time = currentPositionSec;
+  // A new tap wins over earlier taps it contradicts
+  const kept = getAnchors(plainInfo.key).filter(a =>
+    a.line !== index && !(a.line < index && a.time >= time) && !(a.line > index && a.time <= time));
+  const anchors = cleanAnchors([...kept, { line: index, time }], plainLines.length).slice(-MAX_ANCHORS);
+  userScrollUntil = 0;
+  setAnchors(plainInfo.key, anchors, { save: true });
+  publishShareState(true);
+  showToast(anchors.length === 1 ? 'Got it. Timing adjusted from this line.' : `Got it. Timing set from ${anchors.length} taps.`);
+}
+
+function updatePlainLabel() {
+  const label = document.getElementById('plain-label');
+  if (!label) return;
+  const taps = getAnchors(plainInfo?.key).length;
+  label.textContent = taps
+    ? `Timing set from ${taps} tap${taps === 1 ? '' : 's'} · tap the line being sung to fine-tune`
+    : 'Estimated timing · tap the line being sung to fix it';
+}
+
+function renderPlainLyrics(plainText, meta = {}, info = currentTrackInfo, requestId = lyricsRequestId) {
   plainLines = plainText
     .split('\n')
     .map(l => l.trim())
     .filter(Boolean)
     .map(romanize);
+  plainMeta = meta;
+  plainInfo = info ? { key: info.key, durationSec: info.durationSec } : { key: currentTrackKey, durationSec: currentDurationSec };
+  plainMode = true;
 
   const header = document.createElement('div');
   header.className = 'plain-header';
   const label = document.createElement('span');
   label.className = 'plain-label';
-  label.textContent = 'Not synced, scrolls with the song';
+  label.id = 'plain-label';
   header.append(label);
-  plainMeta = meta;
 
-  const nodes = plainLines.map((line) => {
+  // Unsynced lines behave like synced ones, on estimated times
+  const times = estimateLineTimes(plainLines, plainInfo.durationSec, getAnchors(plainInfo.key));
+  lyrics = plainLines.map((text, i) => ({ id: `est-${requestId}-${i}`, text, timestamp: times[i] }));
+
+  const nodes = lyrics.map((item, i) => {
     const div = document.createElement('div');
-    div.className = 'lyric-line plain';
-    div.textContent = line;
+    div.className = 'lyric-line estimated';
+    div.id = item.id;
+    div.textContent = item.text;
+    // Tap = "this line is being sung now"
+    div.setAttribute('role', 'button');
+    div.tabIndex = 0;
+    div.addEventListener('click', () => markLineSung(i));
+    div.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        markLineSung(i);
+      }
+    });
     return div;
   });
 
   const credit = sourceCredit(meta);
   dom.lyricsContainer.replaceChildren(header, ...nodes, ...(credit ? [credit] : []));
   dom.lyricsContainer.scrollTop = 0;
-  plainMode = true;
+  jumpNextScroll = true;
+  updatePlainLabel();
   updateSyncStart();
+  updateTimingControl();
+  activeLyricId = null;
+  highlightActiveLyric(currentPositionSec);
 }
 
 function updateSyncStart() {
   if (dom.syncStart) dom.syncStart.hidden = !(plainMode && !syncState && plainLines.length > 0 && !passenger);
-}
-
-// Unsynced lyrics: keep the part of the song we're probably at in the middle of the screen
-function scrollPlainLyrics() {
-  if (!plainMode || syncState || currentDurationSec <= 0 || Date.now() < userScrollUntil) return;
-  const el = dom.lyricsContainer;
-  const max = el.scrollHeight - el.clientHeight;
-  if (max <= 0) return;
-  const target = max * Math.min(1, currentPositionSec / currentDurationSec);
-  // Ease towards the target so it glides instead of jumping on each poll
-  el.scrollTop += (target - el.scrollTop) * 0.08;
 }
 
 function renderLyrics(lyricItems, meta = {}) {
@@ -1287,6 +1414,7 @@ function renderLyrics(lyricItems, meta = {}) {
   const credit = sourceCredit(meta);
   dom.lyricsContainer.replaceChildren(...nodes, ...(credit ? [credit] : []));
   dom.lyricsContainer.scrollTop = 0;
+  jumpNextScroll = true;
 }
 
 function highlightActiveLyric(seconds) {
@@ -1324,8 +1452,13 @@ function scrollToActiveLine() {
     ? document.getElementById(activeLyricId)
     : (lyrics[0] && document.getElementById(lyrics[0].id));
   if (!target) return;
-  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+  const el = dom.lyricsContainer;
+  const distance = Math.abs(target.offsetTop + target.offsetHeight / 2 - (el.scrollTop + el.clientHeight / 2));
+  // Glide one line at a time; jump (don't race) when lyrics just loaded or we're far off
+  const jump = jumpNextScroll || distance > el.clientHeight * 1.5
+    || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  jumpNextScroll = false;
+  target.scrollIntoView({ behavior: jump ? 'auto' : 'smooth', block: 'center' });
 }
 
 // A passenger scrolling to read ahead or back: hold auto-scroll for a few seconds
@@ -1389,6 +1522,7 @@ function enterSyncMode(meta) {
   });
   dom.lyricsContainer.replaceChildren(intro, ...nodes);
   plainMode = false;
+  lyrics = [];
   updateSyncStart();
   dom.syncBar.hidden = false;
   updateTimingControl();
@@ -1459,7 +1593,7 @@ function exitSyncMode(restore = true) {
   const lines = syncState.lines;
   syncState = null;
   if (dom.syncBar) dom.syncBar.hidden = true;
-  if (restore) renderPlainLyrics(lines.join('\n'), meta);
+  if (restore) renderPlainLyrics(lines.join('\n'), meta, plainInfo || currentTrackInfo, lyricsRequestId);
   updateTimingControl();
 }
 
@@ -1584,7 +1718,7 @@ async function fetchFromDatabase(trackKey) {
   try {
     const res = await apiFetch(`/api/lyrics?${params}`, { auth: !passenger });
     if (!res) return null;
-    if (res.ok) return { entry: res.data.entry, offset: res.data.offset };
+    if (res.ok) return { entry: res.data.entry, offset: res.data.offset, anchors: res.data.anchors };
     if (res.status === 404 && res.data && typeof res.data.offset === 'number') return { offset: res.data.offset };
     return null;
   } catch (err) {
@@ -1770,7 +1904,8 @@ function publishShareState(force = false) {
         durationSec: currentDurationSec,
         progressSec: currentPositionSec,
         isPlaying,
-        offset
+        offset,
+        anchors: plainMode ? getAnchors(currentTrackKey) : []
       }
     }
   }).then((res) => {
@@ -1828,6 +1963,7 @@ async function pollPassenger() {
     }
 
     passenger.state = state;
+    if (Array.isArray(state.anchors)) applyRemoteAnchors(state.key, state.anchors);
     passenger.offset = Number.isFinite(state.offset) ? state.offset : DEFAULT_TIMING_OFFSET;
     const latencySec = state.isPlaying ? (performance.now() - sentAt) / 2000 : 0;
     currentPositionSec = data.position + latencySec;

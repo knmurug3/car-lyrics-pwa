@@ -10,6 +10,7 @@
 
 const { q, t, LIVE_LYRICS } = require('../lib/db');
 const { send, query, readJson, rateLimited, spotifyUser, randomId, handle } = require('../lib/http');
+const { cleanAnchors } = require('../lib/store');
 
 const SESSION_HOURS = 12;
 
@@ -30,7 +31,8 @@ function cleanState(s) {
     durationSec: num(s.durationSec),
     progressSec: num(s.progressSec),
     isPlaying: Boolean(s.isPlaying),
-    offset: Math.max(-10, Math.min(10, num(s.offset)))
+    offset: Math.max(-10, Math.min(10, num(s.offset))),
+    anchors: cleanAnchors(s.anchors) || []
   };
 }
 

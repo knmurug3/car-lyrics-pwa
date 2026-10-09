@@ -878,3 +878,8 @@ body.passenger .lyric-line {
     transition: none;
   }
 }
+
+/* Unsynced lyrics on estimated timing: tap the line being sung */
+.lyric-line.estimated {
+  cursor: pointer;
+}
