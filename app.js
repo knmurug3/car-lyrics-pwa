@@ -179,8 +179,8 @@ async function refreshAccessToken() {
 }
 
 function onSpotifyAuthenticated() {
-  dom.loginBtn.style.display = 'none';
-  dom.statusBadge.style.display = 'flex';
+  dom.loginBtn.hidden = true;
+  dom.statusBadge.hidden = false;
   dom.statusText.textContent = 'Connected';
   startSpotifyPolling();
 }
@@ -291,38 +291,20 @@ async function pollCurrentlyPlaying() {
 }
 
 // -------------------------------------------------------------
-// Script Detection & Romanization (Tanglish + other Indic languages)
+// Romanization: every non-English script is shown in English letters
 // -------------------------------------------------------------
-
-const SCRIPT_PREF_KEY = 'carlyrics_prefer_english_script';
-let preferEnglishScript = loadScriptPreference();
-let currentLyricsScript = null; // dominant Indic script of the lyrics on screen
-
-function loadScriptPreference() {
-  try {
-    return localStorage.getItem(SCRIPT_PREF_KEY) !== 'false';
-  } catch (err) {
-    return true;
-  }
-}
-
-function saveScriptPreference() {
-  try {
-    localStorage.setItem(SCRIPT_PREF_KEY, String(preferEnglishScript));
-  } catch (err) {}
-}
 
 // Unicode blocks -> Sanscript scheme names
 const INDIC_SCRIPTS = [
-  { name: 'devanagari', from: 0x0900, to: 0x097F, label: 'हिन्दी' },
-  { name: 'bengali', from: 0x0980, to: 0x09FF, label: 'বাংলা' },
-  { name: 'gurmukhi', from: 0x0A00, to: 0x0A7F, label: 'ਪੰਜਾਬੀ' },
-  { name: 'gujarati', from: 0x0A80, to: 0x0AFF, label: 'ગુજરાતી' },
-  { name: 'oriya', from: 0x0B00, to: 0x0B7F, label: 'ଓଡ଼ିଆ' },
-  { name: 'tamil', from: 0x0B80, to: 0x0BFF, label: 'தமிழ்' },
-  { name: 'telugu', from: 0x0C00, to: 0x0C7F, label: 'తెలుగు' },
-  { name: 'kannada', from: 0x0C80, to: 0x0CFF, label: 'ಕನ್ನಡ' },
-  { name: 'malayalam', from: 0x0D00, to: 0x0D7F, label: 'മലയാളം' }
+  { name: 'devanagari', from: 0x0900, to: 0x097F },
+  { name: 'bengali', from: 0x0980, to: 0x09FF },
+  { name: 'gurmukhi', from: 0x0A00, to: 0x0A7F },
+  { name: 'gujarati', from: 0x0A80, to: 0x0AFF },
+  { name: 'oriya', from: 0x0B00, to: 0x0B7F },
+  { name: 'tamil', from: 0x0B80, to: 0x0BFF },
+  { name: 'telugu', from: 0x0C00, to: 0x0C7F },
+  { name: 'kannada', from: 0x0C80, to: 0x0CFF },
+  { name: 'malayalam', from: 0x0D00, to: 0x0D7F }
 ];
 
 function scriptOfChar(ch) {
@@ -331,26 +313,25 @@ function scriptOfChar(ch) {
   return INDIC_SCRIPTS.find(s => code >= s.from && code <= s.to)?.name || null;
 }
 
-function hasIndicScript(text) {
-  return /[ऀ-ൿ]/.test(text || '');
+// Any letter outside the Latin alphabet (Tamil, Hindi, Korean, Arabic, ...)
+const NON_LATIN_LETTER = /(?!\p{Script=Latin})\p{L}/u;
+
+function needsRomanization(text) {
+  return NON_LATIN_LETTER.test(text || '');
 }
 
-function detectDominantScript(text) {
-  const counts = {};
-  for (const ch of text || '') {
-    const s = scriptOfChar(ch);
-    if (s) counts[s] = (counts[s] || 0) + 1;
-  }
-  let best = null;
-  for (const s in counts) {
-    if (!best || counts[s] > counts[best]) best = s;
-  }
-  return best;
+// Indic scheme name, 'other' for any other non-Latin script, 'mark' for
+// combining marks (they belong to the preceding letter), null for Latin/punctuation
+function classifyChar(ch) {
+  const indic = scriptOfChar(ch);
+  if (indic) return indic;
+  if (/\p{M}/u.test(ch)) return 'mark';
+  if (NON_LATIN_LETTER.test(ch)) return 'other';
+  return null;
 }
 
-// Romanize any mix of Latin + Indic text, run by run
 function romanize(text) {
-  if (!text || !hasIndicScript(text)) return text;
+  if (!text || !needsRomanization(text)) return text;
   const normalized = text.normalize('NFC');
   let out = '';
   let run = '';
@@ -363,9 +344,9 @@ function romanize(text) {
   };
 
   for (const ch of normalized) {
-    const s = scriptOfChar(ch);
-    // Spaces and punctuation stay attached to the current run
-    if (s !== runScript && (s || /\p{L}/u.test(ch))) {
+    const s = classifyChar(ch);
+    // Spaces, punctuation and combining marks stay attached to the current run
+    if (s !== 'mark' && s !== runScript && (s || /\p{L}/u.test(ch))) {
       flush();
       runScript = s;
     }
@@ -378,9 +359,28 @@ function romanize(text) {
 
 function romanizeRun(text, script) {
   if (script === 'tamil') return transliterateTamil(text);
+  if (script === 'other') return romanizeOther(text);
   if (typeof Sanscript === 'undefined') return text;
   try {
     return simplifyIast(Sanscript.t(text, script, 'iast'), script);
+  } catch (err) {
+    return text;
+  }
+}
+
+// Korean, Chinese, Japanese, Cyrillic, Arabic, Thai, ... via any-ascii
+function romanizeOther(text) {
+  if (typeof window.anyAscii !== 'function') return text;
+  try {
+    let out = window.anyAscii(text);
+    // any-ascii writes Chinese/Japanese as "WoAiNi": split into readable syllables
+    if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) {
+      out = out.replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2');
+    }
+    if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text)) {
+      out = out.toLowerCase();
+    }
+    return out;
   } catch (err) {
     return text;
   }
@@ -529,7 +529,6 @@ const DURATION_TOLERANCE_SEC = 4;
 
 let lyricsRequestId = 0;
 let lyricsAbortController = null;
-let renderedLines = []; // { id, originalText, romanText } for whatever is on screen
 
 function cleanSongTitle(title) {
   if (!title) return '';
@@ -588,9 +587,9 @@ function scoreCandidate(result, query) {
   if (result.syncedLyrics) score += 40;
   else score += 10;
 
-  // Tie-breaker only: prefer lyrics already in English letters
+  // Tie-breaker only: prefer lyrics already written in English letters
   const lyricText = result.syncedLyrics || result.plainLyrics || '';
-  if (preferEnglishScript && !hasIndicScript(lyricText)) score += 3;
+  if (!needsRomanization(lyricText)) score += 3;
 
   return score;
 }
@@ -671,10 +670,7 @@ async function findLyrics(query, signal) {
 
 function resetLyricsState() {
   lyrics = [];
-  renderedLines = [];
   activeLyricId = null;
-  currentLyricsScript = null;
-  updateScriptToggleLabels();
 }
 
 async function fetchLyrics({ title, artists, album, durationSec }) {
@@ -684,7 +680,7 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
   const { signal } = lyricsAbortController;
 
   resetLyricsState();
-  renderStateMessage('Fetching Lyrics', `Searching synchronized database for ${title}...`, true);
+  renderLoading();
 
   const cleanTitle = cleanSongTitle(title) || title;
   const query = {
@@ -713,25 +709,14 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
   } else if (lyricsData?.plainLyrics) {
     renderPlainLyrics(lyricsData.plainLyrics, requestId);
   } else {
-    renderStateMessage('🎵 Instrumental or Unsynced', 'Lyrics not found for this song in the open database.');
+    const searchUrl = new URL('https://www.google.com/search');
+    searchUrl.searchParams.set('q', `${query.shortTitle} ${query.artists[0] || ''} lyrics in english`);
+    renderStateMessage(
+      'No synced lyrics yet',
+      'New songs usually reach the lyrics library within a few days. We check again every time it plays.',
+      { label: 'Search lyrics on the web', href: searchUrl.toString() }
+    );
   }
-}
-
-function makeLine(id, originalText) {
-  return {
-    id,
-    originalText,
-    romanText: romanize(originalText)
-  };
-}
-
-function displayText(line) {
-  return preferEnglishScript ? line.romanText : line.originalText;
-}
-
-function noteScript(lines) {
-  currentLyricsScript = detectDominantScript(lines.map(l => l.originalText).join(' '));
-  updateScriptToggleLabels();
 }
 
 function parseLRC(lrcText, requestId) {
@@ -746,13 +731,15 @@ function parseLRC(lrcText, requestId) {
 
     const rawText = trimmed.replace(timeTag, '').trim();
     if (!rawText) return;
+    const text = romanize(rawText);
 
     // A line can carry several timestamps when it repeats (e.g. a chorus)
     stamps.forEach((m, n) => {
       const fractionStr = m[3] || '0';
       const fraction = parseFloat(fractionStr) / Math.pow(10, fractionStr.length);
       result.push({
-        ...makeLine(`lyric-${requestId}-${index}-${n}`, rawText),
+        id: `lyric-${requestId}-${index}-${n}`,
+        text,
         timestamp: parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + fraction
       });
     });
@@ -761,122 +748,108 @@ function parseLRC(lrcText, requestId) {
   return result.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function renderStateMessage(title, message, withSpinner = false) {
+function renderLoading() {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'skeleton';
+  wrapper.setAttribute('aria-label', 'Loading lyrics');
+  [72, 54, 86, 40, 64].forEach((width) => {
+    const bar = document.createElement('div');
+    bar.className = 'skeleton-line';
+    bar.style.width = `${width}%`;
+    wrapper.appendChild(bar);
+  });
+  dom.lyricsContainer.replaceChildren(wrapper);
+  dom.lyricsContainer.scrollTop = 0;
+}
+
+function renderStateMessage(title, message, action = null) {
   const wrapper = document.createElement('div');
   wrapper.className = 'state-message';
-  if (withSpinner) {
-    const spinner = document.createElement('div');
-    spinner.className = 'spinner';
-    wrapper.appendChild(spinner);
-  }
   const h2 = document.createElement('h2');
   h2.textContent = title;
   const p = document.createElement('p');
   p.textContent = message;
   wrapper.append(h2, p);
+  if (action) {
+    const actions = document.createElement('div');
+    actions.className = 'state-actions';
+    const link = document.createElement('a');
+    link.className = 'btn btn-outline';
+    link.href = action.href;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = action.label;
+    actions.appendChild(link);
+    wrapper.appendChild(actions);
+  }
   dom.lyricsContainer.replaceChildren(wrapper);
+  dom.lyricsContainer.scrollTop = 0;
 }
 
-function renderPlainLyrics(plainText, requestId) {
-  dom.lyricsContainer.innerHTML = '';
-  renderedLines = plainText
+function renderPlainLyrics(plainText) {
+  const label = document.createElement('div');
+  label.className = 'plain-label';
+  label.textContent = 'Not synced to the music';
+
+  const nodes = plainText
     .split('\n')
     .map(l => l.trim())
     .filter(Boolean)
-    .map((text, index) => makeLine(`plain-${requestId}-${index}`, text));
-  noteScript(renderedLines);
+    .map((line) => {
+      const div = document.createElement('div');
+      div.className = 'lyric-line plain';
+      div.textContent = romanize(line);
+      return div;
+    });
 
-  const badge = document.createElement('div');
-  badge.style.fontSize = '0.8rem';
-  badge.style.color = 'var(--text-sub)';
-  badge.style.marginBottom = '24px';
-  badge.style.background = 'rgba(255, 255, 255, 0.08)';
-  badge.style.padding = '6px 14px';
-  badge.style.borderRadius = '20px';
-  badge.textContent = '📄 Plain Lyrics Mode (not synced)';
-  dom.lyricsContainer.appendChild(badge);
-
-  renderedLines.forEach((line) => {
-    const div = document.createElement('div');
-    div.className = 'lyric-line';
-    div.id = line.id;
-    div.style.color = 'rgba(255, 255, 255, 0.85)';
-    div.style.fontSize = '1.35rem';
-    div.textContent = displayText(line);
-    dom.lyricsContainer.appendChild(div);
-  });
+  dom.lyricsContainer.replaceChildren(label, ...nodes);
+  dom.lyricsContainer.scrollTop = 0;
 }
 
 function renderLyrics(lyricItems) {
-  dom.lyricsContainer.innerHTML = '';
-  renderedLines = lyricItems;
-  noteScript(renderedLines);
-
-  lyricItems.forEach((item) => {
+  const nodes = lyricItems.map((item) => {
     const div = document.createElement('div');
     div.className = 'lyric-line';
     div.id = item.id;
-    div.textContent = displayText(item);
+    div.textContent = item.text;
     div.addEventListener('click', () => {
       // Manual click line preview
       currentPositionSec = item.timestamp;
       highlightActiveLyric(currentPositionSec);
     });
-    dom.lyricsContainer.appendChild(div);
+    return div;
   });
+  dom.lyricsContainer.replaceChildren(...nodes);
+  dom.lyricsContainer.scrollTop = 0;
 }
 
 function highlightActiveLyric(seconds) {
   if (!lyrics.length) return;
 
-  let active = null;
-  for (const l of lyrics) {
-    if (l.timestamp > seconds) break;
-    active = l;
+  let activeIndex = -1;
+  for (let i = 0; i < lyrics.length; i++) {
+    if (lyrics[i].timestamp > seconds) break;
+    activeIndex = i;
   }
-  if (!active) return;
+  if (activeIndex < 0) return;
 
-  if (activeLyricId !== active.id) {
-    if (activeLyricId) {
-      const prev = document.getElementById(activeLyricId);
-      if (prev) prev.classList.remove('active');
-    }
+  const active = lyrics[activeIndex];
+  if (activeLyricId === active.id) return;
+  activeLyricId = active.id;
 
-    activeLyricId = active.id;
-    const currentElem = document.getElementById(active.id);
-    if (currentElem) {
-      currentElem.classList.add('active');
-      currentElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }
-}
-
-function scriptToggleLabel() {
-  const native = INDIC_SCRIPTS.find(s => s.name === currentLyricsScript);
-  if (preferEnglishScript) {
-    return currentLyricsScript === 'tamil' || !native ? '🔤 Tanglish' : '🔤 English';
-  }
-  return `🔤 ${native ? native.label : 'Original'}`;
-}
-
-function updateScriptToggleLabels() {
-  const label = scriptToggleLabel();
-  ['script-toggle-btn', 'bottom-script-btn'].forEach((id) => {
-    const btn = document.getElementById(id);
-    if (btn) btn.textContent = label;
-  });
-}
-
-function toggleScript() {
-  preferEnglishScript = !preferEnglishScript;
-  saveScriptPreference();
-  updateScriptToggleLabels();
-
-  // Update currently rendered lyrics (synced or plain) on screen immediately
-  renderedLines.forEach((line) => {
+  // Lines already sung fade further back than the ones coming up
+  lyrics.forEach((line, i) => {
     const el = document.getElementById(line.id);
-    if (el) el.textContent = displayText(line);
+    if (!el) return;
+    el.classList.toggle('active', i === activeIndex);
+    el.classList.toggle('past', i < activeIndex);
   });
+
+  const currentElem = document.getElementById(active.id);
+  if (currentElem) {
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    currentElem.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+  }
 }
 
 function updateProgressBar() {
@@ -909,16 +882,15 @@ function startDemoMode() {
 
   dom.trackTitle.textContent = 'Blinding Lights';
   dom.artistName.textContent = 'The Weeknd';
-  dom.statusBadge.style.display = 'flex';
+  dom.statusBadge.hidden = false;
   dom.statusDot.classList.add('playing');
-  dom.statusText.textContent = 'Demo Mode';
+  dom.statusText.textContent = 'Demo';
 
   const demoAlbumArt = 'https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36';
   dom.albumArt.src = demoAlbumArt;
   dom.ambientBg.style.backgroundImage = `url('${demoAlbumArt}')`;
 
   const demoLRC = `
-[00:00.00] (Synth Intro 🎵)
 [00:12.45] Yeah
 [00:15.80] I've been tryna call
 [00:19.45] I've been on my own for long enough
@@ -972,19 +944,13 @@ function hideQrCodeModal() {
 // Event Listeners
 // -------------------------------------------------------------
 function setupEventListeners() {
-  updateScriptToggleLabels();
-  ['script-toggle-btn', 'bottom-script-btn'].forEach((id) => {
-    const btn = document.getElementById(id);
-    if (btn) btn.addEventListener('click', toggleScript);
-  });
-
   const copyUriBtn = document.getElementById('copy-uri-btn');
   if (copyUriBtn) {
     copyUriBtn.addEventListener('click', () => {
       const uri = getRedirectUri();
       navigator.clipboard.writeText(uri).then(() => {
         const originalText = copyUriBtn.textContent;
-        copyUriBtn.textContent = '✓ Copied!';
+        copyUriBtn.textContent = 'Copied';
         setTimeout(() => { copyUriBtn.textContent = originalText; }, 2500);
       });
     });

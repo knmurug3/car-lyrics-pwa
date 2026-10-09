@@ -1,10 +1,11 @@
-const CACHE_NAME = 'carlyrics-v5';
+const CACHE_NAME = 'carlyrics-v6';
 const ASSETS = [
   './',
   './index.html',
-  './style.css?v=5',
-  './app.js?v=5',
-  './vendor/sanscript.min.js?v=5',
+  './style.css?v=6',
+  './app.js?v=6',
+  './vendor/sanscript.min.js?v=6',
+  './vendor/any-ascii.mjs?v=6',
   './manifest.json'
 ];
 

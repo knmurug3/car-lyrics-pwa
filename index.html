@@ -3,82 +3,83 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a0a0c" />
+  <meta name="theme-color" content="#111214" />
+  <meta name="color-scheme" content="dark" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="CarLyrics" />
-  
-  <title>CarPlay Lyrics • Passenger Display</title>
+
+  <title>CarLyrics</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="https://img.icons8.com/color/192/spotify--v1.png" />
-  <link rel="stylesheet" href="style.css?v=5" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
   <!-- Ambient album background -->
-  <div id="ambient-bg"></div>
-  <div id="ambient-overlay"></div>
+  <div id="ambient-bg" aria-hidden="true"></div>
+  <div id="ambient-overlay" aria-hidden="true"></div>
 
-  <div id="app-container">
-    <!-- Header -->
-    <header>
-      <div class="track-info">
-        <img id="album-art" class="album-art" src="https://img.icons8.com/color/96/spotify--v1.png" alt="Album Art" />
-        <div class="meta">
-          <div id="track-title" class="track-title">CarPlay Lyrics</div>
-          <div id="artist-name" class="artist-name">Connect Spotify or run Demo</div>
-        </div>
+  <div id="app">
+    <!-- Now playing: top bar on phones, side panel on landscape screens -->
+    <aside class="now-playing">
+      <img id="album-art" class="album-art" src="https://img.icons8.com/color/512/spotify--v1.png" alt="Album art" />
+
+      <div class="meta">
+        <div id="track-title" class="track-title">CarLyrics</div>
+        <div id="artist-name" class="artist-name">Live lyrics for the passenger seat</div>
       </div>
 
-      <div class="header-actions">
-        <div id="status-badge" class="status-badge" style="display: none;">
-          <div id="status-dot" class="status-dot"></div>
-          <span id="status-text">Idle</span>
-        </div>
-
-        <button id="demo-btn" class="btn btn-glass">✨ Demo Song</button>
-        <button id="script-toggle-btn" class="btn btn-glass" title="Toggle English letters / original script">🔤 Tanglish</button>
-        <button id="copy-uri-btn" class="btn btn-glass" title="Copy exact Redirect URI for Spotify Dashboard">📋 Copy URI</button>
-        <button id="login-btn" class="btn btn-primary">Connect Spotify</button>
-        <button id="qr-btn" class="btn btn-glass" title="Passenger QR Share">📱 Share</button>
-      </div>
-    </header>
-
-    <!-- Synced Lyrics Scroll Area -->
-    <main id="lyrics-container">
-      <div class="state-message">
-        <h2>🎵 Ready for the Road</h2>
-        <p>Connect your Spotify account or tap <strong>✨ Demo Song</strong> above to preview live synchronized karaoke lyrics.</p>
-      </div>
-    </main>
-
-    <!-- In-Car Footer / Progress -->
-    <footer>
-      <div class="progress-container">
-        <span id="time-current" class="progress-time">0:00</span>
-        <div class="progress-bar-bg">
+      <div class="progress">
+        <div class="progress-bar" aria-hidden="true">
           <div id="progress-fill" class="progress-fill"></div>
         </div>
-        <span id="time-total" class="progress-time">0:00</span>
+        <div class="progress-times">
+          <span id="time-current">0:00</span>
+          <span id="time-total">0:00</span>
+        </div>
       </div>
 
-      <div class="car-mode-badge">
-        <span>🚘 Passenger Mode Active • Screen Awake ON</span>
-        <button id="bottom-script-btn" class="btn btn-glass" style="padding: 4px 12px; font-size: 0.78rem;">🔤 Tanglish</button>
+      <div class="controls">
+        <div id="status-badge" class="status-badge" hidden>
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Idle</span>
+        </div>
+        <button id="login-btn" class="btn btn-primary">Connect<span class="wide-only"> Spotify</span></button>
+        <button id="qr-btn" class="btn btn-quiet" title="Open these lyrics on another phone">Share</button>
       </div>
-    </footer>
+    </aside>
+
+    <!-- Synced lyrics -->
+    <main id="lyrics-container">
+      <div class="state-message welcome">
+        <h1>Lyrics that keep up with the road</h1>
+        <p>Connect Spotify and every song shows up here, synced and in English letters.</p>
+        <div class="welcome-actions">
+          <button id="demo-btn" class="btn btn-outline">Try a demo song</button>
+          <button id="copy-uri-btn" class="btn btn-link" title="For setting up your own Spotify developer app">Copy redirect URI</button>
+        </div>
+      </div>
+    </main>
   </div>
 
   <!-- Passenger QR Modal -->
   <div id="qr-modal" class="modal-overlay">
-    <div class="modal-content">
-      <h3>📱 Passenger Screen</h3>
-      <p>Scan with any phone in the car to view these live lyrics on your own screen!</p>
-      <img id="qr-code-img" src="" alt="Passenger QR Code" />
-      <button id="close-qr-btn" class="btn btn-primary" style="width: 100%; justify-content: center;">Done</button>
+    <div class="modal-content" role="dialog" aria-labelledby="qr-title">
+      <h3 id="qr-title">Open on another phone</h3>
+      <p>Scan to follow these lyrics on your own screen.</p>
+      <img id="qr-code-img" src="" alt="QR code for this page" />
+      <button id="close-qr-btn" class="btn btn-primary btn-block">Done</button>
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=5"></script>
-  <script src="app.js?v=5"></script>
+  <script src="vendor/sanscript.min.js?v=6"></script>
+  <script type="module">
+    import anyAscii from './vendor/any-ascii.mjs?v=6';
+    window.anyAscii = anyAscii;
+  </script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>
