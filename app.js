@@ -1660,11 +1660,14 @@ const TEXT_SIZES = [
   { scale: 1.18, label: 'Large' },
   { scale: 1.36, label: 'Extra large' }
 ];
-const TEXT_SIZE_KEY = 'carlyrics_text_size';
+// v2: Extra large became the default everywhere, so earlier choices start over
+const TEXT_SIZE_KEY = 'carlyrics_text_size_v2';
+const DEFAULT_TEXT_SIZE = 3; // Extra large
+try { localStorage.removeItem('carlyrics_text_size'); } catch (err) {}
 
 function applyTextSize() {
-  let index = parseInt(localStorage.getItem(TEXT_SIZE_KEY) || '1', 10);
-  if (!TEXT_SIZES[index]) index = 1;
+  let index = parseInt(localStorage.getItem(TEXT_SIZE_KEY) ?? String(DEFAULT_TEXT_SIZE), 10);
+  if (!TEXT_SIZES[index]) index = DEFAULT_TEXT_SIZE;
   document.documentElement.style.setProperty('--lyric-scale', TEXT_SIZES[index].scale);
   return index;
 }
