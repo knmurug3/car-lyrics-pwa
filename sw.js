@@ -1,11 +1,11 @@
-const CACHE_NAME = 'carlyrics-v7';
+const CACHE_NAME = 'carlyrics-v8';
 const ASSETS = [
   './',
   './index.html',
-  './style.css?v=7',
-  './app.js?v=7',
-  './vendor/sanscript.min.js?v=7',
-  './vendor/any-ascii.mjs?v=7',
+  './style.css?v=8',
+  './app.js?v=8',
+  './vendor/sanscript.min.js?v=8',
+  './vendor/any-ascii.mjs?v=8',
   './manifest.json'
 ];
 
@@ -27,20 +27,31 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Let external API calls pass through normally to network
-  if (e.request.url.includes('spotify.com') || e.request.url.includes('lrclib.net')) {
-    return;
-  }
-  // Network-first so code updates apply immediately
+  const url = new URL(e.request.url);
+
+  // Only the app's own files: Spotify, LRCLIB, fonts and album art go straight to the network
+  if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
+
+  // Stale-while-revalidate: open instantly from cache (weak signal in the car),
+  // refresh the cached copy in the background for next time
   e.respondWith(
-    fetch(e.request)
-      .then((networkRes) => {
-        if (networkRes.status === 200) {
-          const resClone = networkRes.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(e.request, resClone));
-        }
-        return networkRes;
-      })
-      .catch(() => caches.match(e.request))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const isPage = e.request.mode === 'navigate';
+      // The OAuth redirect lands on /?code=..., which is still the app page
+      const cached = await cache.match(isPage ? './' : e.request, { ignoreSearch: isPage });
+
+      const network = fetch(e.request)
+        .then((res) => {
+          if (res.ok) cache.put(isPage ? './' : e.request, res.clone());
+          return res;
+        })
+        .catch(() => cached);
+
+      if (cached) {
+        e.waitUntil(network);
+        return cached;
+      }
+      return network;
+    })
   );
 });

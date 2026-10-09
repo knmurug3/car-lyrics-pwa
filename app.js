@@ -1,26 +1,37 @@
 // Spotify App Configuration
 const SPOTIFY_CLIENT_ID = 'f81df8eb9f39460fa7bc321b650279ba';
-const SPOTIFY_SCOPES = 'user-read-currently-playing user-read-playback-state';
+const SPOTIFY_SCOPES = 'user-read-currently-playing user-read-playback-state user-modify-playback-state';
+const SPOTIFY_API = 'https://api.spotify.com/v1';
+const POLL_INTERVAL_MS = 2500;
+const USER_SCROLL_PAUSE_MS = 5000;
 
 // State
 let accessToken = localStorage.getItem('spotify_access_token');
 let refreshToken = localStorage.getItem('spotify_refresh_token');
 let tokenExpiresAt = parseInt(localStorage.getItem('spotify_token_expires_at') || '0', 10);
+let grantedScopes = localStorage.getItem('spotify_scope') || '';
+let isAuthenticated = false;
+let refreshPromise = null;
 
 let isPlaying = false;
 let currentPositionSec = 0;
 let currentDurationSec = 0;
-let currentTrackId = null;
-let currentTrackTitle = '';
-let currentArtist = '';
+let currentTrackKey = null;
+let hasSeenTrack = false;
 
 let lyrics = []; // Array of { id, timestamp, text }
+let lyricsRequestId = 0; // bumps on every track change so stale results are dropped
 let activeLyricId = null;
 let isDemoMode = false;
 let wakeLock = null;
 
 let pollInterval = null;
-let interpolateInterval = null;
+let pollInFlight = false;
+let pollBlockedUntil = 0;
+let lastClockTick = performance.now();
+let userScrollUntil = 0;
+let needsRecenter = false;
+let toastTimer = null;
 
 // UI Elements
 const dom = {
@@ -40,16 +51,22 @@ const dom = {
   qrCodeImg: document.getElementById('qr-code-img'),
   progressFill: document.getElementById('progress-fill'),
   timeCurrent: document.getElementById('time-current'),
-  timeTotal: document.getElementById('time-total')
+  timeTotal: document.getElementById('time-total'),
+  timing: document.getElementById('timing'),
+  timingValue: document.getElementById('timing-value'),
+  timingEarlier: document.getElementById('timing-earlier'),
+  timingLater: document.getElementById('timing-later'),
+  toast: document.getElementById('toast')
 };
 
 // -------------------------------------------------------------
 // Initialization
 // -------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', async () => {
-  requestWakeLock();
+  setupWakeLock();
   registerServiceWorker();
   setupEventListeners();
+  startClock();
 
   // Check for OAuth redirect callback
   const params = new URLSearchParams(window.location.search);
@@ -63,27 +80,29 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (accessToken && Date.now() < tokenExpiresAt) {
     onSpotifyAuthenticated();
   } else if (refreshToken) {
-    await refreshAccessToken();
-    if (accessToken) onSpotifyAuthenticated();
+    if (await refreshAccessToken()) onSpotifyAuthenticated();
   }
 });
 
 // -------------------------------------------------------------
-// Screen Wake Lock (Keep Screen Awake on Dashboard Mount)
+// Screen Wake Lock (keep the screen on for the whole drive)
 // -------------------------------------------------------------
 async function requestWakeLock() {
-  if ('wakeLock' in navigator) {
-    try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      document.addEventListener('visibilitychange', async () => {
-        if (wakeLock !== null && document.visibilityState === 'visible') {
-          wakeLock = await navigator.wakeLock.request('screen');
-        }
-      });
-    } catch (err) {
-      console.warn('Wake Lock request failed:', err);
-    }
+  if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+  if (wakeLock && !wakeLock.released) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (err) {
+    console.warn('Wake Lock request failed:', err);
   }
+}
+
+function setupWakeLock() {
+  requestWakeLock();
+  // The lock drops whenever the page is hidden, and some browsers only grant it
+  // after a tap, so ask again on both
+  document.addEventListener('visibilitychange', requestWakeLock);
+  document.addEventListener('click', requestWakeLock);
 }
 
 function registerServiceWorker() {
@@ -119,6 +138,19 @@ async function loginWithSpotify() {
   window.location.href = authUrl.toString();
 }
 
+function saveTokens(data) {
+  accessToken = data.access_token;
+  tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+  // Spotify may rotate the refresh token: always keep the newest one
+  if (data.refresh_token) refreshToken = data.refresh_token;
+  if (data.scope) grantedScopes = data.scope;
+
+  localStorage.setItem('spotify_access_token', accessToken);
+  localStorage.setItem('spotify_token_expires_at', tokenExpiresAt.toString());
+  if (refreshToken) localStorage.setItem('spotify_refresh_token', refreshToken);
+  if (grantedScopes) localStorage.setItem('spotify_scope', grantedScopes);
+}
+
 async function handleOAuthCallback(code) {
   const codeVerifier = localStorage.getItem('spotify_code_verifier');
   if (!codeVerifier) return;
@@ -137,24 +169,23 @@ async function handleOAuthCallback(code) {
     });
 
     const data = await response.json();
-    if (data.access_token) {
-      accessToken = data.access_token;
-      refreshToken = data.refresh_token || refreshToken;
-      tokenExpiresAt = Date.now() + (data.expires_in * 1000);
-
-      localStorage.setItem('spotify_access_token', accessToken);
-      if (refreshToken) localStorage.setItem('spotify_refresh_token', refreshToken);
-      localStorage.setItem('spotify_token_expires_at', tokenExpiresAt.toString());
-
-      onSpotifyAuthenticated();
-    }
+    if (data.access_token) saveTokens(data);
+    localStorage.removeItem('spotify_code_verifier');
   } catch (err) {
     console.error('Failed to exchange Spotify token:', err);
   }
 }
 
-async function refreshAccessToken() {
-  if (!refreshToken) return;
+// Only one refresh at a time: a rotated refresh token can be used once
+function refreshAccessToken() {
+  if (!refreshToken) return Promise.resolve(false);
+  if (!refreshPromise) {
+    refreshPromise = doRefreshAccessToken().finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
+async function doRefreshAccessToken() {
   try {
     const response = await fetch('https://accounts.spotify.com/api/token', {
       method: 'POST',
@@ -168,20 +199,47 @@ async function refreshAccessToken() {
 
     const data = await response.json();
     if (data.access_token) {
-      accessToken = data.access_token;
-      tokenExpiresAt = Date.now() + (data.expires_in * 1000);
-      localStorage.setItem('spotify_access_token', accessToken);
-      localStorage.setItem('spotify_token_expires_at', tokenExpiresAt.toString());
+      saveTokens(data);
+      return true;
     }
+    // Revoked or expired for good: ask the user to connect again
+    if (data.error === 'invalid_grant' || response.status === 400 || response.status === 401) {
+      signOut('Your Spotify sign-in expired. Tap Connect to sign in again.');
+    }
+    return false;
   } catch (err) {
+    // Offline: keep the tokens and try again on the next poll
     console.error('Token refresh failed', err);
+    return false;
   }
 }
 
+function signOut(message) {
+  ['spotify_access_token', 'spotify_refresh_token', 'spotify_token_expires_at', 'spotify_scope']
+    .forEach(k => localStorage.removeItem(k));
+  accessToken = null;
+  refreshToken = null;
+  tokenExpiresAt = 0;
+  grantedScopes = '';
+  isAuthenticated = false;
+  isPlaying = false;
+  clearInterval(pollInterval);
+
+  dom.loginBtn.hidden = false;
+  dom.statusBadge.hidden = true;
+  if (message) renderStateMessage('Signed out of Spotify', message);
+}
+
 function onSpotifyAuthenticated() {
+  if (isAuthenticated) return;
+  isAuthenticated = true;
+
   dom.loginBtn.hidden = true;
   dom.statusBadge.hidden = false;
   dom.statusText.textContent = 'Connected';
+  if (!isDemoMode) {
+    renderStateMessage('Play something on Spotify', 'Lyrics show up here as soon as a song starts.');
+  }
   startSpotifyPolling();
 }
 
@@ -207,67 +265,125 @@ async function generateCodeChallenge(verifier) {
 }
 
 // -------------------------------------------------------------
-// Spotify Real-time Playback Tracking & Local Interpolation
+// Spotify Real-time Playback Tracking & Local Clock
 // -------------------------------------------------------------
-function startSpotifyPolling() {
-  pollCurrentlyPlaying();
-  clearInterval(pollInterval);
-  pollInterval = setInterval(pollCurrentlyPlaying, 2500);
 
-  // Local 100ms clock for smooth 60fps lyric scrolling
-  clearInterval(interpolateInterval);
-  interpolateInterval = setInterval(() => {
+// One local clock for both Spotify and demo playback. It advances by real
+// elapsed time, so throttled timers never make the lyrics drift.
+function startClock() {
+  lastClockTick = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const elapsed = (now - lastClockTick) / 1000;
+    lastClockTick = now;
+
     if (isPlaying && currentDurationSec > 0) {
-      currentPositionSec += 0.1;
-      if (currentPositionSec > currentDurationSec) currentPositionSec = currentDurationSec;
+      currentPositionSec += elapsed;
+      if (currentPositionSec > currentDurationSec) {
+        currentPositionSec = isDemoMode ? 0 : currentDurationSec;
+      }
       updateProgressBar();
       highlightActiveLyric(currentPositionSec);
+    }
+
+    // Passenger stopped scrolling: bring the current line back into view
+    if (needsRecenter && Date.now() >= userScrollUntil) {
+      needsRecenter = false;
+      scrollToActiveLine();
     }
   }, 100);
 }
 
-function fetchCurrentlyPlaying() {
-  return fetch('https://api.spotify.com/v1/me/player/currently-playing', {
-    headers: { Authorization: `Bearer ${accessToken}` }
+function startSpotifyPolling() {
+  clearInterval(pollInterval);
+  pollInterval = setInterval(pollCurrentlyPlaying, POLL_INTERVAL_MS);
+  pollCurrentlyPlaying();
+}
+
+function makeTrackKey(track) {
+  // Local files have no Spotify id
+  if (track.id) return track.id;
+  return `local:${track.name}|${(track.artists || []).map(a => a.name).join(',')}|${track.duration_ms}`;
+}
+
+function trackInfo(track) {
+  return {
+    key: makeTrackKey(track),
+    title: track.name,
+    artists: (track.artists || []).map(a => a.name),
+    album: track.album?.name || '',
+    durationSec: track.duration_ms / 1000
+  };
+}
+
+async function spotifyFetch(path, options = {}) {
+  if (Date.now() > tokenExpiresAt - 60000) await refreshAccessToken();
+  if (!accessToken) return null;
+
+  const send = () => fetch(`${SPOTIFY_API}${path}`, {
+    ...options,
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
   });
+
+  let res = await send();
+  if (res.status === 401 && await refreshAccessToken()) {
+    res = await send();
+  }
+  if (res.status === 429) {
+    // Rate limited: wait as long as Spotify asks before polling again
+    const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10);
+    pollBlockedUntil = Date.now() + Math.max(retryAfter, 1) * 1000;
+  }
+  return res;
+}
+
+function setPlaybackStatus(playing, label) {
+  isPlaying = playing;
+  dom.statusDot.classList.toggle('playing', playing);
+  dom.statusText.textContent = label;
 }
 
 async function pollCurrentlyPlaying() {
-  if (isDemoMode) return;
-  if (!accessToken) return;
+  if (isDemoMode || !isAuthenticated) return;
+  if (document.hidden || pollInFlight || Date.now() < pollBlockedUntil) return;
 
-  if (Date.now() > tokenExpiresAt - 60000) {
-    await refreshAccessToken();
-  }
-
+  pollInFlight = true;
   try {
-    let res = await fetchCurrentlyPlaying();
-    if (res.status === 401) {
-      await refreshAccessToken();
-      res = await fetchCurrentlyPlaying();
-    }
+    const sentAt = performance.now();
+    const res = await spotifyFetch('/me/player/currently-playing');
+    if (!res || isDemoMode) return;
 
-    if (res.status === 204 || res.status >= 400) return;
+    if (res.status === 204) {
+      // Nothing is playing any more: stop the local clock
+      setPlaybackStatus(false, 'Nothing playing');
+      if (!hasSeenTrack) {
+        renderStateMessage('Play something on Spotify', 'Lyrics show up here as soon as a song starts.');
+      }
+      return;
+    }
+    if (!res.ok) return;
 
     const data = await res.json();
-    if (!data || !data.item) return;
+    if (!data || !data.item || data.currently_playing_type !== 'track') {
+      setPlaybackStatus(false, data?.currently_playing_type === 'ad' ? 'Ad' : 'Paused');
+      return;
+    }
 
     const track = data.item;
-    isPlaying = data.is_playing;
-    currentPositionSec = data.progress_ms / 1000;
+    // progress_ms is already stale by the time it reaches us: add half the round trip
+    const latencySec = data.is_playing ? (performance.now() - sentAt) / 2000 : 0;
+    currentPositionSec = data.progress_ms / 1000 + latencySec;
     currentDurationSec = track.duration_ms / 1000;
+    lastClockTick = performance.now();
+    setPlaybackStatus(data.is_playing, data.is_playing ? 'Playing' : 'Paused');
 
-    dom.statusDot.classList.toggle('playing', isPlaying);
-    dom.statusText.textContent = isPlaying ? 'Playing' : 'Paused';
+    const info = trackInfo(track);
+    if (info.key !== currentTrackKey) {
+      currentTrackKey = info.key;
+      hasSeenTrack = true;
 
-    const trackChanged = (track.id !== currentTrackId);
-    if (trackChanged) {
-      currentTrackId = track.id;
-      currentTrackTitle = track.name;
-      currentArtist = track.artists.map(a => a.name).join(', ');
-
-      dom.trackTitle.textContent = currentTrackTitle;
-      dom.artistName.textContent = currentArtist;
+      dom.trackTitle.textContent = info.title;
+      dom.artistName.textContent = info.artists.join(', ');
 
       const artUrl = track.album?.images?.[0]?.url || '';
       if (artUrl) {
@@ -275,18 +391,63 @@ async function pollCurrentlyPlaying() {
         dom.ambientBg.style.backgroundImage = `url('${artUrl}')`;
       }
 
-      fetchLyrics({
-        title: track.name,
-        artists: track.artists.map(a => a.name),
-        album: track.album?.name || '',
-        durationSec: currentDurationSec
-      });
+      fetchLyrics(info);
+      prefetchNextTrack();
     }
 
     updateProgressBar();
     highlightActiveLyric(currentPositionSec);
   } catch (err) {
     console.error('Playback poll error:', err);
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+// Fetch the next song's lyrics now so they appear the moment it starts
+async function prefetchNextTrack() {
+  try {
+    const res = await spotifyFetch('/me/player/queue');
+    if (!res || !res.ok) return;
+    const data = await res.json();
+    const next = (data.queue || []).find(item => item && item.type === 'track');
+    if (!next) return;
+    const info = trackInfo(next);
+    if (info.key !== currentTrackKey) await resolveLyrics(info);
+  } catch (err) {
+    console.warn('Prefetch failed:', err);
+  }
+}
+
+// Tap a line to jump the song there (Spotify Premium only)
+async function seekTo(seconds) {
+  const target = Math.max(0, seconds - getTimingOffset());
+
+  if (isDemoMode || !isAuthenticated) {
+    currentPositionSec = target;
+    highlightActiveLyric(currentPositionSec);
+    return;
+  }
+
+  if (!grantedScopes.split(' ').includes('user-modify-playback-state')) {
+    showToast('Reconnect Spotify once to jump by tapping a line.', { label: 'Reconnect', onClick: loginWithSpotify });
+    return;
+  }
+
+  try {
+    const res = await spotifyFetch(`/me/player/seek?position_ms=${Math.round(target * 1000)}`, { method: 'PUT' });
+    if (res && res.ok) {
+      currentPositionSec = target;
+      lastClockTick = performance.now();
+      userScrollUntil = 0;
+      highlightActiveLyric(currentPositionSec);
+    } else if (res && res.status === 403) {
+      showToast('Jumping to a line needs Spotify Premium.');
+    } else if (res && res.status === 404) {
+      showToast('No active Spotify device to control.');
+    }
+  } catch (err) {
+    showToast('Could not reach Spotify.');
   }
 }
 
@@ -530,9 +691,6 @@ const LRCLIB_HEADERS = { 'Lrclib-Client': 'CarLyricsPWA/1.1 (https://github.com/
 const LYRICS_REQUEST_TIMEOUT_MS = 6000;
 const DURATION_TOLERANCE_SEC = 4;
 
-let lyricsRequestId = 0;
-let lyricsAbortController = null;
-
 function cleanSongTitle(title) {
   if (!title) return '';
   return title
@@ -729,22 +887,60 @@ async function findLyrics(query, signal) {
   return best ? best.result : null;
 }
 
-function resetLyricsState() {
-  lyrics = [];
-  activeLyricId = null;
+// -------------------------------------------------------------
+// Lyrics cache (instant repeat plays, works with weak signal)
+// -------------------------------------------------------------
+const LYRICS_CACHE_KEY = 'carlyrics_lyrics_cache_v1';
+const LYRICS_CACHE_MAX = 200;
+const OFFSETS_KEY = 'carlyrics_timing_offsets_v1';
+const pendingLyrics = new Map(); // track key -> in-flight search promise
+
+function readJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) || fallback;
+  } catch (err) {
+    return fallback;
+  }
 }
 
-async function fetchLyrics({ title, artists, album, durationSec }) {
-  const requestId = ++lyricsRequestId;
-  if (lyricsAbortController) lyricsAbortController.abort();
-  lyricsAbortController = new AbortController();
-  const { signal } = lyricsAbortController;
+function writeJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
 
-  resetLyricsState();
-  renderLoading();
+function getCachedLyrics(key) {
+  const cache = readJson(LYRICS_CACHE_KEY, {});
+  return cache[key] || null;
+}
 
+function cacheLyrics(key, entry) {
+  const cache = readJson(LYRICS_CACHE_KEY, {});
+  cache[key] = { ...entry, usedAt: Date.now() };
+
+  // Keep the most recently used songs only
+  const keys = Object.keys(cache);
+  if (keys.length > LYRICS_CACHE_MAX) {
+    keys.sort((a, b) => cache[a].usedAt - cache[b].usedAt)
+      .slice(0, keys.length - LYRICS_CACHE_MAX)
+      .forEach(k => delete cache[k]);
+  }
+
+  // Storage full: drop the older half and try once more
+  if (!writeJson(LYRICS_CACHE_KEY, cache)) {
+    keys.sort((a, b) => cache[a].usedAt - cache[b].usedAt)
+      .slice(0, Math.floor(keys.length / 2))
+      .forEach(k => delete cache[k]);
+    writeJson(LYRICS_CACHE_KEY, cache);
+  }
+}
+
+function buildQuery({ title, artists, album, durationSec }) {
   const cleanTitle = cleanSongTitle(title) || title;
-  const query = {
+  return {
     rawTitle: title,
     cleanTitle,
     shortTitle: cleanTitle.split(' - ')[0].trim(),
@@ -753,13 +949,51 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
     durationSec,
     language: detectSongLanguage(title, album)
   };
+}
 
-  let lyricsData = null;
-  try {
-    lyricsData = await findLyrics(query, signal);
-  } catch (err) {
-    console.warn('Lyrics search failed:', err);
+// Cached lyrics, or one shared LRCLIB search per song (current track and prefetch)
+function resolveLyrics(info) {
+  const cached = getCachedLyrics(info.key);
+  if (cached) {
+    cacheLyrics(info.key, cached);
+    return Promise.resolve(cached);
   }
+  if (pendingLyrics.has(info.key)) return pendingLyrics.get(info.key);
+
+  // Not tied to a track change: a prefetched search should still finish and be cached
+  const controller = new AbortController();
+  const promise = findLyrics(buildQuery(info), controller.signal)
+    .then((result) => {
+      if (!result) return null;
+      const entry = { syncedLyrics: result.syncedLyrics || null, plainLyrics: result.plainLyrics || null };
+      cacheLyrics(info.key, entry);
+      return entry;
+    })
+    .catch((err) => {
+      console.warn('Lyrics search failed:', err);
+      return null;
+    })
+    .finally(() => pendingLyrics.delete(info.key));
+
+  pendingLyrics.set(info.key, promise);
+  return promise;
+}
+
+function resetLyricsState() {
+  lyrics = [];
+  activeLyricId = null;
+  needsRecenter = false;
+  userScrollUntil = 0;
+  updateTimingControl();
+}
+
+async function fetchLyrics(info) {
+  const requestId = ++lyricsRequestId;
+  resetLyricsState();
+
+  const cached = getCachedLyrics(info.key);
+  if (!cached) renderLoading();
+  const lyricsData = cached ? (cacheLyrics(info.key, cached), cached) : await resolveLyrics(info);
 
   // A newer track started while we were searching: drop this stale result
   if (requestId !== lyricsRequestId) return;
@@ -767,10 +1001,12 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
   if (lyricsData?.syncedLyrics) {
     lyrics = parseLRC(lyricsData.syncedLyrics, requestId);
     renderLyrics(lyrics);
+    updateTimingControl();
     highlightActiveLyric(currentPositionSec);
   } else if (lyricsData?.plainLyrics) {
-    renderPlainLyrics(lyricsData.plainLyrics, requestId);
+    renderPlainLyrics(lyricsData.plainLyrics);
   } else {
+    const query = buildQuery(info);
     const searchUrl = new URL('https://www.google.com/search');
     searchUrl.searchParams.set('q', `${query.shortTitle} ${query.artists[0] || ''} lyrics in english`);
     renderStateMessage(
@@ -779,6 +1015,36 @@ async function fetchLyrics({ title, artists, album, durationSec }) {
       { label: 'Search lyrics on the web', href: searchUrl.toString() }
     );
   }
+}
+
+// -------------------------------------------------------------
+// Timing nudge (per song: some LRCLIB entries run early or late)
+// -------------------------------------------------------------
+function getTimingOffset() {
+  if (!currentTrackKey || isDemoMode) return 0;
+  return readJson(OFFSETS_KEY, {})[currentTrackKey] || 0;
+}
+
+function changeTimingOffset(delta) {
+  if (!currentTrackKey) return;
+  const offsets = readJson(OFFSETS_KEY, {});
+  const next = Math.round(((offsets[currentTrackKey] || 0) + delta) * 10) / 10;
+  if (next === 0) delete offsets[currentTrackKey];
+  else offsets[currentTrackKey] = Math.max(-10, Math.min(10, next));
+  writeJson(OFFSETS_KEY, offsets);
+
+  activeLyricId = null;
+  updateTimingControl();
+  highlightActiveLyric(currentPositionSec);
+}
+
+function updateTimingControl() {
+  if (!dom.timing) return;
+  const show = lyrics.length > 0 && !isDemoMode;
+  dom.timing.hidden = !show;
+  if (!show) return;
+  const offset = getTimingOffset();
+  dom.timingValue.textContent = offset === 0 ? 'In sync' : `${offset > 0 ? '+' : ''}${offset.toFixed(1)}s`;
 }
 
 function parseLRC(lrcText, requestId) {
@@ -874,11 +1140,7 @@ function renderLyrics(lyricItems) {
     div.className = 'lyric-line';
     div.id = item.id;
     div.textContent = item.text;
-    div.addEventListener('click', () => {
-      // Manual click line preview
-      currentPositionSec = item.timestamp;
-      highlightActiveLyric(currentPositionSec);
-    });
+    div.addEventListener('click', () => seekTo(item.timestamp));
     return div;
   });
   dom.lyricsContainer.replaceChildren(...nodes);
@@ -888,30 +1150,46 @@ function renderLyrics(lyricItems) {
 function highlightActiveLyric(seconds) {
   if (!lyrics.length) return;
 
+  const position = seconds + getTimingOffset();
   let activeIndex = -1;
   for (let i = 0; i < lyrics.length; i++) {
-    if (lyrics[i].timestamp > seconds) break;
+    if (lyrics[i].timestamp > position) break;
     activeIndex = i;
   }
-  if (activeIndex < 0) return;
 
-  const active = lyrics[activeIndex];
-  if (activeLyricId === active.id) return;
-  activeLyricId = active.id;
+  const activeId = activeIndex >= 0 ? lyrics[activeIndex].id : null;
+  if (activeLyricId === activeId) return;
+  activeLyricId = activeId;
 
-  // Lines already sung fade further back than the ones coming up
+  // Lines already sung fade further back than the ones coming up.
+  // Before the first line (e.g. after seeking back) nothing is highlighted.
   lyrics.forEach((line, i) => {
     const el = document.getElementById(line.id);
     if (!el) return;
     el.classList.toggle('active', i === activeIndex);
-    el.classList.toggle('past', i < activeIndex);
+    el.classList.toggle('past', activeIndex >= 0 && i < activeIndex);
   });
 
-  const currentElem = document.getElementById(active.id);
-  if (currentElem) {
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    currentElem.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+  if (Date.now() < userScrollUntil) {
+    needsRecenter = true;
+  } else {
+    scrollToActiveLine();
   }
+}
+
+function scrollToActiveLine() {
+  const target = activeLyricId
+    ? document.getElementById(activeLyricId)
+    : (lyrics[0] && document.getElementById(lyrics[0].id));
+  if (!target) return;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+}
+
+// A passenger scrolling to read ahead or back: hold auto-scroll for a few seconds
+function onUserScroll() {
+  userScrollUntil = Date.now() + USER_SCROLL_PAUSE_MS;
+  needsRecenter = true;
 }
 
 function updateProgressBar() {
@@ -928,25 +1206,42 @@ function formatTime(secs) {
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
+function showToast(message, action = null) {
+  if (!dom.toast) return;
+  const text = document.createElement('span');
+  text.textContent = message;
+  const nodes = [text];
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-primary';
+    btn.textContent = action.label;
+    btn.addEventListener('click', action.onClick);
+    nodes.push(btn);
+  }
+  dom.toast.replaceChildren(...nodes);
+  dom.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { dom.toast.hidden = true; }, action ? 8000 : 4000);
+}
+
 // -------------------------------------------------------------
 // In-Car Demo Mode (Instant Test without Spotify Login)
 // -------------------------------------------------------------
 function startDemoMode() {
   isDemoMode = true;
-  isPlaying = true;
+  currentTrackKey = 'demo';
   currentPositionSec = 0;
   currentDurationSec = 200;
+  lastClockTick = performance.now();
 
   // Cancel any in-flight Spotify lyrics search so it can't overwrite the demo
   const requestId = ++lyricsRequestId;
-  if (lyricsAbortController) lyricsAbortController.abort();
   resetLyricsState();
 
   dom.trackTitle.textContent = 'Blinding Lights';
   dom.artistName.textContent = 'The Weeknd';
   dom.statusBadge.hidden = false;
-  dom.statusDot.classList.add('playing');
-  dom.statusText.textContent = 'Demo';
+  setPlaybackStatus(true, 'Demo');
 
   const demoAlbumArt = 'https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36';
   dom.albumArt.src = demoAlbumArt;
@@ -979,21 +1274,14 @@ function startDemoMode() {
 
   lyrics = parseLRC(demoLRC, requestId);
   renderLyrics(lyrics);
-
-  clearInterval(interpolateInterval);
-  interpolateInterval = setInterval(() => {
-    currentPositionSec += 0.1;
-    if (currentPositionSec > currentDurationSec) currentPositionSec = 0;
-    updateProgressBar();
-    highlightActiveLyric(currentPositionSec);
-  }, 100);
+  highlightActiveLyric(currentPositionSec);
 }
 
 // -------------------------------------------------------------
 // Passenger QR Code Sharing
 // -------------------------------------------------------------
 function showQrCodeModal() {
-  const currentUrl = encodeURIComponent(window.location.href);
+  const currentUrl = encodeURIComponent(getRedirectUri());
   dom.qrCodeImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${currentUrl}`;
   dom.qrModal.classList.add('open');
 }
@@ -1017,6 +1305,18 @@ function setupEventListeners() {
       });
     });
   }
+
+  ['wheel', 'touchmove', 'keydown'].forEach((type) => {
+    dom.lyricsContainer.addEventListener(type, onUserScroll, { passive: true });
+  });
+
+  dom.timingEarlier.addEventListener('click', () => changeTimingOffset(0.5));
+  dom.timingLater.addEventListener('click', () => changeTimingOffset(-0.5));
+
+  // Catch up straight away when the screen comes back on
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pollCurrentlyPlaying();
+  });
 
   dom.loginBtn.addEventListener('click', loginWithSpotify);
   dom.demoBtn.addEventListener('click', startDemoMode);

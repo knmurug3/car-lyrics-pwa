@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="style.css?v=7" />
+  <link rel="stylesheet" href="style.css?v=8" />
 </head>
 <body>
   <!-- Ambient album background -->
@@ -53,6 +53,7 @@
     </aside>
 
     <!-- Synced lyrics -->
+    <section class="lyrics-pane">
     <main id="lyrics-container">
       <div class="state-message welcome">
         <h1>Lyrics that keep up with the road</h1>
@@ -63,23 +64,33 @@
         </div>
       </div>
     </main>
+
+      <!-- Per-song timing nudge for lyrics that run early or late -->
+      <div id="timing" class="timing" hidden>
+        <button id="timing-later" class="timing-btn" title="Show lyrics later">Later</button>
+        <span id="timing-value" class="timing-value">In sync</span>
+        <button id="timing-earlier" class="timing-btn" title="Show lyrics earlier">Earlier</button>
+      </div>
+    </section>
   </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
 
   <!-- Passenger QR Modal -->
   <div id="qr-modal" class="modal-overlay">
     <div class="modal-content" role="dialog" aria-labelledby="qr-title">
       <h3 id="qr-title">Open on another phone</h3>
-      <p>Scan to follow these lyrics on your own screen.</p>
+      <p>Scan to open CarLyrics on another phone, then connect it to the same Spotify account that is playing.</p>
       <img id="qr-code-img" src="" alt="QR code for this page" />
       <button id="close-qr-btn" class="btn btn-primary btn-block">Done</button>
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=7"></script>
+  <script src="vendor/sanscript.min.js?v=8"></script>
   <script type="module">
-    import anyAscii from './vendor/any-ascii.mjs?v=7';
+    import anyAscii from './vendor/any-ascii.mjs?v=8';
     window.anyAscii = anyAscii;
   </script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
