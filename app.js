@@ -281,42 +281,142 @@ async function pollCurrentlyPlaying() {
 }
 
 // -------------------------------------------------------------
-// LRCLIB Synced Lyrics API Engine
+// LRCLIB Synced Lyrics API Engine (with Tamil / Regional Cleaning & Multi-Stage Fallback)
 // -------------------------------------------------------------
+
+function cleanSongTitle(title) {
+  if (!title) return '';
+  return title
+    // Remove (From "...") or [From "..."] or (feat. ...)
+    .replace(/[\(\[\{](?:from|feat|ft|ost|soundtrack|original|tamil|telugu|remastered).*?[\)\]\}]/gi, '')
+    // Remove (with ...) or (reprise)
+    .replace(/[\(\[\{](?:with|version|reprise).*?[\)\]\}]/gi, '')
+    // Remove trailing "- From ..." or "- Original Soundtrack"
+    .replace(/-\s*(?:from|ost|soundtrack|original|reprise|version).*$/gi, '')
+    .trim();
+}
+
+function getPrimaryArtist(artist) {
+  if (!artist) return '';
+  // Take first artist before comma, semicolon, or ampersand
+  return artist.split(/[,;&]/)[0].trim();
+}
+
 async function fetchLyrics(track, artist, durationSec) {
   dom.lyricsContainer.innerHTML = `
     <div class="state-message">
       <div class="spinner"></div>
-      <h2>Fetching Synced Lyrics</h2>
-      <p>Searching for synchronized timestamps...</p>
+      <h2>Fetching Lyrics</h2>
+      <p>Searching synchronized database for ${track}...</p>
     </div>
   `;
 
+  const cleanTitle = cleanSongTitle(track);
+  const primaryArtist = getPrimaryArtist(artist);
+  const headers = {
+    'User-Agent': 'CarLyricsPWA/1.0.0 (https://github.com/carlyrics)'
+  };
+
+  let lyricsData = null;
+
+  // Tier 1: Exact match with cleaned metadata
   try {
     const url = new URL('https://lrclib.net/api/get');
-    url.searchParams.set('track_name', track);
-    url.searchParams.set('artist_name', artist);
-    url.searchParams.set('duration', durationSec);
+    url.searchParams.set('track_name', cleanTitle);
+    url.searchParams.set('artist_name', primaryArtist);
+    if (durationSec) url.searchParams.set('duration', durationSec);
 
-    const res = await fetch(url.toString(), {
-      headers: {
-        'User-Agent': 'CarLyricsPWA/1.0.0 (https://github.com/carlyrics)'
-      }
-    });
-
-    if (!res.ok) throw new Error('Lyrics not found');
-    const data = await res.json();
-
-    if (data.syncedLyrics) {
-      lyrics = parseLRC(data.syncedLyrics);
-      renderLyrics(lyrics);
-      highlightActiveLyric(currentPositionSec);
-    } else {
-      renderNoLyrics('Synced lyrics not found for this song.');
+    const res = await fetch(url.toString(), { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && (data.syncedLyrics || data.plainLyrics)) lyricsData = data;
     }
-  } catch (err) {
-    renderNoLyrics('No synchronized lyrics found for this track.');
+  } catch (err) {}
+
+  // Tier 2: Search with cleaned track_name & artist_name
+  if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
+    try {
+      const searchUrl = new URL('https://lrclib.net/api/search');
+      searchUrl.searchParams.set('track_name', cleanTitle);
+      searchUrl.searchParams.set('artist_name', primaryArtist);
+      const res = await fetch(searchUrl.toString(), { headers });
+      if (res.ok) {
+        const results = await res.json();
+        if (Array.isArray(results) && results.length > 0) {
+          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
+        }
+      }
+    } catch (err) {}
   }
+
+  // Tier 3: Search with short title (before any dash) + primary artist
+  if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
+    try {
+      const shortTitle = cleanTitle.split('-')[0].trim();
+      const searchUrl = new URL('https://lrclib.net/api/search');
+      searchUrl.searchParams.set('q', `${shortTitle} ${primaryArtist}`);
+      const res = await fetch(searchUrl.toString(), { headers });
+      if (res.ok) {
+        const results = await res.json();
+        if (Array.isArray(results) && results.length > 0) {
+          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
+        }
+      }
+    } catch (err) {}
+  }
+
+  // Tier 4: Fallback search with raw original Spotify track name
+  if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
+    try {
+      const searchUrl = new URL('https://lrclib.net/api/search');
+      searchUrl.searchParams.set('q', track);
+      const res = await fetch(searchUrl.toString(), { headers });
+      if (res.ok) {
+        const results = await res.json();
+        if (Array.isArray(results) && results.length > 0) {
+          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
+        }
+      }
+    } catch (err) {}
+  }
+
+  // Render results
+  if (lyricsData?.syncedLyrics) {
+    lyrics = parseLRC(lyricsData.syncedLyrics);
+    renderLyrics(lyrics);
+    highlightActiveLyric(currentPositionSec);
+  } else if (lyricsData?.plainLyrics) {
+    lyrics = [];
+    renderPlainLyrics(lyricsData.plainLyrics);
+  } else {
+    renderNoLyrics('Lyrics not found for this song in the open database.');
+  }
+}
+
+function renderPlainLyrics(plainText) {
+  dom.lyricsContainer.innerHTML = '';
+  const badge = document.createElement('div');
+  badge.style.fontSize = '0.8rem';
+  badge.style.color = 'var(--text-sub)';
+  badge.style.marginBottom = '24px';
+  badge.style.background = 'rgba(255, 255, 255, 0.08)';
+  badge.style.padding = '6px 14px';
+  badge.style.borderRadius = '20px';
+  badge.textContent = '📄 Plain Lyrics Mode (Timestamps unavailable for this track)';
+  dom.lyricsContainer.appendChild(badge);
+
+  const lines = plainText.split('\n');
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed) {
+      const div = document.createElement('div');
+      div.className = 'lyric-line';
+      div.style.color = 'rgba(255, 255, 255, 0.85)';
+      div.style.fontSize = '1.35rem';
+      div.textContent = trimmed;
+      dom.lyricsContainer.appendChild(div);
+    }
+  });
 }
 
 function parseLRC(lrcText) {
