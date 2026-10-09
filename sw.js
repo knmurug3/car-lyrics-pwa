@@ -1,15 +1,16 @@
-const CACHE_NAME = 'carlyrics-v1';
+const CACHE_NAME = 'carlyrics-v4';
 const ASSETS = [
   './',
   './index.html',
-  './style.css',
-  './app.js',
+  './style.css?v=4',
+  './app.js?v=4',
   './manifest.json'
 ];
 
 self.addEventListener('install', (e) => {
+  self.skipWaiting();
   e.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
   );
 });
 
@@ -28,7 +29,16 @@ self.addEventListener('fetch', (e) => {
   if (e.request.url.includes('spotify.com') || e.request.url.includes('lrclib.net')) {
     return;
   }
+  // Network-first so code updates apply immediately
   e.respondWith(
-    caches.match(e.request).then((res) => res || fetch(e.request))
+    fetch(e.request)
+      .then((networkRes) => {
+        if (networkRes.status === 200) {
+          const resClone = networkRes.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(e.request, resClone));
+        }
+        return networkRes;
+      })
+      .catch(() => caches.match(e.request))
   );
 });

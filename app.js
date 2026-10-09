@@ -635,21 +635,29 @@ function hideQrCodeModal() {
 // Event Listeners
 // -------------------------------------------------------------
 function setupEventListeners() {
-  const scriptToggleBtn = document.getElementById('script-toggle-btn');
-  if (scriptToggleBtn) {
-    scriptToggleBtn.addEventListener('click', () => {
-      preferEnglishScript = !preferEnglishScript;
-      scriptToggleBtn.textContent = preferEnglishScript ? '🔤 Tanglish' : '🔤 தமிழ்';
+  function toggleScript() {
+    preferEnglishScript = !preferEnglishScript;
+    const label = preferEnglishScript ? '🔤 Tanglish' : '🔤 தமிழ்';
+    if (scriptToggleBtn) scriptToggleBtn.textContent = label;
+    const bottomBtn = document.getElementById('bottom-script-btn');
+    if (bottomBtn) bottomBtn.textContent = preferEnglishScript ? '🔤 Tanglish' : '🔤 தமிழ்';
 
-      // Update currently rendered lyrics on screen immediately
-      if (lyrics.length > 0) {
-        lyrics.forEach((item) => {
-          item.text = preferEnglishScript ? item.tanglishText : item.originalText;
-          const el = document.getElementById(item.id);
-          if (el) el.textContent = item.text;
-        });
-      }
-    });
+    // Update currently rendered lyrics on screen immediately
+    if (lyrics.length > 0) {
+      lyrics.forEach((item) => {
+        item.text = preferEnglishScript ? item.tanglishText : item.originalText;
+        const el = document.getElementById(item.id);
+        if (el) el.textContent = item.text;
+      });
+    }
+  }
+
+  if (scriptToggleBtn) {
+    scriptToggleBtn.addEventListener('click', toggleScript);
+  }
+  const bottomScriptBtn = document.getElementById('bottom-script-btn');
+  if (bottomScriptBtn) {
+    bottomScriptBtn.addEventListener('click', toggleScript);
   }
 
   const copyUriBtn = document.getElementById('copy-uri-btn');
