@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="style.css?v=9" />
+  <link rel="stylesheet" href="style.css?v=10" />
 </head>
 <body>
   <!-- Ambient album background -->
@@ -48,6 +48,8 @@
           <span id="status-text">Idle</span>
         </div>
         <button id="login-btn" class="btn btn-primary">Connect<span class="wide-only"> Spotify</span></button>
+        <button id="text-size-btn" class="btn btn-quiet btn-icon" title="Text size" aria-label="Text size">Aa</button>
+        <button id="fullscreen-btn" class="btn btn-quiet wide-screen-only" hidden>Full screen</button>
         <button id="qr-btn" class="btn btn-quiet" title="Open these lyrics on another phone">Share</button>
       </div>
     </aside>
@@ -68,8 +70,19 @@
       <!-- Per-song timing nudge for lyrics that run early or late -->
       <div id="timing" class="timing" hidden>
         <button id="timing-later" class="timing-btn" title="Show lyrics later">Later</button>
-        <span id="timing-value" class="timing-value">In sync</span>
+        <span id="timing-value" class="timing-value">Early 0.5s</span>
         <button id="timing-earlier" class="timing-btn" title="Show lyrics earlier">Earlier</button>
+      </div>
+
+      <!-- Unsynced lyrics: start tap-to-sync (stays visible while the lyrics scroll) -->
+      <button id="sync-start" class="btn btn-quiet floating-action" hidden>Sync along</button>
+
+      <!-- Tap-to-sync controls for unsynced lyrics -->
+      <div id="sync-bar" class="sync-bar" hidden>
+        <span id="sync-progress" class="sync-progress">Line 1</span>
+        <button id="sync-undo" class="btn btn-quiet">Undo</button>
+        <button id="sync-cancel" class="btn btn-link">Cancel</button>
+        <button id="sync-tap" class="btn btn-primary sync-tap">Tap when this line starts</button>
       </div>
     </section>
   </div>
@@ -81,16 +94,18 @@
     <div class="modal-content" role="dialog" aria-labelledby="qr-title">
       <h3 id="qr-title">Open on another phone</h3>
       <p>Scan to open CarLyrics on another phone, then connect it to the same Spotify account that is playing.</p>
-      <img id="qr-code-img" src="" alt="QR code for this page" />
+      <div id="qr-code" class="qr-code" role="img" aria-label="QR code for this app"></div>
       <button id="close-qr-btn" class="btn btn-primary btn-block">Done</button>
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=9"></script>
+  <script src="vendor/sanscript.min.js?v=10"></script>
+  <script src="vendor/qrcode.min.js?v=10"></script>
+  <script src="vendor/nosleep.min.js?v=10"></script>
   <script type="module">
-    import anyAscii from './vendor/any-ascii.mjs?v=9';
+    import anyAscii from './vendor/any-ascii.mjs?v=10';
     window.anyAscii = anyAscii;
   </script>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

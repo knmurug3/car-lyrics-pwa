@@ -55,7 +55,12 @@ function filmNames(title, album) {
   const fromMatch = `${title} ${album}`.match(/from\s+["“]([^"”]+)["”]/i);
   if (fromMatch) names.push(fromMatch[1]);
   const albumClean = (album || '').replace(/[([].*?[)\]]/g, '').replace(/\s-\s.*$/, '').trim();
-  if (albumClean) names.push(albumClean);
+  // A single's album is just the song title again: that says nothing about the film
+  const song = normalize(cleanTitle(title));
+  const albumNorm = normalize(albumClean);
+  if (albumNorm && albumNorm !== song && !song.includes(albumNorm) && !albumNorm.includes(song)) {
+    names.push(albumClean);
+  }
   return [...new Set(names.filter(Boolean))];
 }
 
@@ -183,10 +188,25 @@ function extractLyrics(html) {
 }
 
 // Accept the page only if it is about the same film or the same artists
+// Only the page's own title and credits count: menus and "popular songs" lists
+// on every page name the same big composers
+function pageIdentity(html) {
+  const credits = html.search(/Music Director|Lyricist/);
+  const creditText = credits >= 0 ? html.slice(credits, credits + 1500).replace(/<[^>]+>/g, ' ') : '';
+  return ` ${normalize(`${pageTitle(html)} ${creditText}`)} `;
+}
+
+function containsPhrase(haystack, phrase) {
+  const p = normalize(phrase);
+  return p.length > 1 && haystack.includes(` ${p} `);
+}
+
+// When Spotify tells us the film, the page must be from that film.
+// Otherwise the credits must name one of the artists.
 function pageMatches(html, films, artists) {
-  const head = normalize(html.slice(0, 200000).replace(/<[^>]+>/g, ' '));
-  if (films.some(f => normalize(f) && head.includes(normalize(f)))) return true;
-  return artists.some(a => normalize(a).length > 3 && head.includes(normalize(a)));
+  const identity = pageIdentity(html);
+  if (films.length) return films.some(f => containsPhrase(identity, f));
+  return artists.some(a => normalize(a).length > 3 && containsPhrase(identity, a));
 }
 
 function pageTitle(html) {
@@ -231,7 +251,9 @@ async function findOnTamil2Lyrics({ title, artists, album }) {
     if (page?.plainLyrics) return page;
   }
 
-  // 3) Newest songs on the site (sitemap): best fuzzy title matches, film/artist still verified
+  // 3) Newest songs on the site (sitemap): best fuzzy title matches. Only when the film is
+  // known, so a stray request can't make us download the whole list for nothing.
+  if (!films.length) return null;
   const tried = new Set([`${slugify(wanted)}-song-lyrics`, ...candidates.keys()]);
   const wantedSkeleton = skeleton(wanted);
   const matches = (await newestSongSlugs())
@@ -245,18 +267,44 @@ async function findOnTamil2Lyrics({ title, artists, album }) {
   return null;
 }
 
+// Basic per-IP limit (per warm instance): the app needs a handful of calls per drive
+const RATE_LIMIT = 30;
+const RATE_WINDOW_MS = 60 * 60 * 1000;
+const callsByIp = new Map();
+
+function rateLimited(ip) {
+  const now = Date.now();
+  const recent = (callsByIp.get(ip) || []).filter(t => now - t < RATE_WINDOW_MS);
+  recent.push(now);
+  callsByIp.set(ip, recent);
+  if (callsByIp.size > 5000) callsByIp.clear();
+  return recent.length > RATE_LIMIT;
+}
+
+function send(res, status, body, cacheControl) {
+  res.statusCode = status;
+  if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+  res.end(JSON.stringify(body));
+}
+
 module.exports = async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
-  const title = (url.searchParams.get('title') || '').slice(0, 200);
-  const album = (url.searchParams.get('album') || '').slice(0, 200);
+  const title = (url.searchParams.get('title') || '').trim();
+  const album = (url.searchParams.get('album') || '').trim().slice(0, 120);
   const artists = (url.searchParams.get('artists') || '')
-    .split(',').map(a => a.trim()).filter(Boolean).slice(0, 5);
+    .split(',').map(a => a.trim().slice(0, 60)).filter(Boolean).slice(0, 4);
 
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
-  if (!title) {
-    res.statusCode = 400;
-    res.end(JSON.stringify({ error: 'title is required' }));
+  if (!title || title.length > 120 || !/[a-z]/i.test(title)) {
+    send(res, 400, { error: 'a song title (up to 120 characters) is required' });
+    return;
+  }
+
+  const ip = String(req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
+  if (rateLimited(ip)) {
+    res.setHeader('Retry-After', '600');
+    send(res, 429, { error: 'too many requests' }, 'no-store');
     return;
   }
 

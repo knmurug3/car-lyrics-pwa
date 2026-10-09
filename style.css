@@ -281,6 +281,15 @@ body {
   background: #d4a017;
 }
 
+.status-badge.offline {
+  color: #e8b64a;
+}
+
+.status-badge.offline .status-dot {
+  background: #e8b64a;
+  animation: none;
+}
+
 .status-dot.playing {
   background: var(--accent);
 }
@@ -304,7 +313,7 @@ body {
 }
 
 .lyric-line {
-  font-size: clamp(1.6rem, 3.4vw, 2.9rem);
+  font-size: calc(clamp(1.6rem, 3.4vw, 2.9rem) * var(--lyric-scale, 1));
   font-weight: 700;
   line-height: 1.22;
   letter-spacing: -0.015em;
@@ -330,7 +339,7 @@ body {
 .lyric-line.plain {
   opacity: 0.85;
   transform: none;
-  font-size: clamp(1.3rem, 2.6vw, 2rem);
+  font-size: calc(clamp(1.3rem, 2.6vw, 2rem) * var(--lyric-scale, 1));
   cursor: default;
 }
 
@@ -450,13 +459,19 @@ body {
   margin-bottom: 20px;
 }
 
-#qr-code-img {
+.qr-code {
   width: 180px;
   height: 180px;
+  margin: 0 auto 20px;
   padding: 8px;
-  margin-bottom: 20px;
   border-radius: 12px;
   background: #fff;
+}
+
+.qr-code svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* ---------------------------------------------------------------
@@ -602,4 +617,139 @@ body {
 
 .toast .btn {
   padding: 8px 14px;
+}
+
+/* ---------------------------------------------------------------
+   Controls added in v10: text size, full screen, sync along
+   --------------------------------------------------------------- */
+.btn-icon {
+  min-width: 44px;
+  padding-inline: 12px;
+  font-weight: 700;
+}
+
+.btn-small {
+  font-size: 0.82rem;
+  padding: 7px 14px;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.wide-screen-only {
+  display: none;
+}
+
+@media (min-width: 900px) and (orientation: landscape) {
+  .wide-screen-only:not([hidden]) {
+    display: inline-block;
+  }
+
+  .controls {
+    flex-wrap: wrap;
+  }
+}
+
+.plain-header {
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plain-header .plain-label {
+  align-self: auto;
+}
+
+.lyrics-credit {
+  margin-top: 12px;
+  font-size: 0.85rem;
+  color: var(--text-sub);
+}
+
+.lyrics-credit a {
+  color: var(--text-sub);
+  text-underline-offset: 3px;
+}
+
+.lyric-line:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: 6px;
+  opacity: 1;
+}
+
+.sync-bar {
+  position: absolute;
+  left: clamp(12px, 3vw, 32px);
+  right: clamp(12px, 3vw, 32px);
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  grid-template-areas:
+    "progress undo cancel"
+    "tap tap tap";
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 5;
+}
+
+.sync-progress {
+  grid-area: progress;
+  padding-left: 8px;
+  font-size: 0.88rem;
+  color: var(--text-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+#sync-undo { grid-area: undo; }
+#sync-cancel { grid-area: cancel; }
+
+.sync-tap {
+  grid-area: tap;
+  width: 100%;
+  padding: 18px;
+  font-size: 1.05rem;
+}
+
+.lyrics-pane:has(.sync-bar:not([hidden])) #lyrics-container {
+  padding-bottom: 55vh;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lyric-line,
+  .plain-header,
+  .state-message {
+    animation: fade-in 0.45s var(--ease) backwards;
+  }
+
+  .progress-fill,
+  .btn-primary {
+    transition: background-color 0.8s ease, width 0.1s linear, transform 0.15s var(--ease);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+
+.floating-action {
+  position: absolute;
+  right: clamp(16px, 3vw, 32px);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 4;
 }

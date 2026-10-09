@@ -1,7 +1,7 @@
 {
   "name": "CarPlay Lyrics",
   "short_name": "CarLyrics",
-  "start_url": "./index.html",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#111214",
