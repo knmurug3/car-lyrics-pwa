@@ -11,7 +11,7 @@
   <title>CarPlay Lyrics • Passenger Display</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="https://img.icons8.com/color/192/spotify--v1.png" />
-  <link rel="stylesheet" href="style.css?v=4" />
+  <link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <!-- Ambient album background -->
@@ -36,7 +36,7 @@
         </div>
 
         <button id="demo-btn" class="btn btn-glass">✨ Demo Song</button>
-        <button id="script-toggle-btn" class="btn btn-glass" title="Toggle English / Tamil script">🔤 Tanglish</button>
+        <button id="script-toggle-btn" class="btn btn-glass" title="Toggle English letters / original script">🔤 Tanglish</button>
         <button id="copy-uri-btn" class="btn btn-glass" title="Copy exact Redirect URI for Spotify Dashboard">📋 Copy URI</button>
         <button id="login-btn" class="btn btn-primary">Connect Spotify</button>
         <button id="qr-btn" class="btn btn-glass" title="Passenger QR Share">📱 Share</button>
@@ -63,7 +63,7 @@
 
       <div class="car-mode-badge">
         <span>🚘 Passenger Mode Active • Screen Awake ON</span>
-        <button id="bottom-script-btn" class="btn btn-glass" style="padding: 4px 12px; font-size: 0.78rem;">🔤 English / Tanglish</button>
+        <button id="bottom-script-btn" class="btn btn-glass" style="padding: 4px 12px; font-size: 0.78rem;">🔤 Tanglish</button>
       </div>
     </footer>
   </div>
@@ -78,6 +78,7 @@
     </div>
   </div>
 
-  <script src="app.js?v=4"></script>
+  <script src="vendor/sanscript.min.js?v=5"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
