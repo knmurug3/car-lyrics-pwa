@@ -1,13 +1,14 @@
-const CACHE_NAME = 'carlyrics-v16';
+const CACHE_NAME = 'carlyrics-v17';
 const ASSETS = [
   './',
-  './style.css?v=16',
-  './app.js?v=16',
-  './lib/lyrics-engine.js?v=16',
-  './vendor/sanscript.min.js?v=16',
-  './vendor/any-ascii.mjs?v=16',
-  './vendor/qrcode.min.js?v=16',
-  './vendor/nosleep.min.js?v=16',
+  './style.css?v=17',
+  './app.js?v=17',
+  './lib/lyrics-engine.js?v=17',
+  './vendor/sanscript.min.js?v=17',
+  './vendor/any-ascii.mjs?v=17',
+  './vendor/any-ascii-loader.mjs?v=17',
+  './vendor/qrcode.min.js?v=17',
+  './vendor/nosleep.min.js?v=17',
   './manifest.json',
   './brand/mark.svg',
   './brand/cover-placeholder.svg',
