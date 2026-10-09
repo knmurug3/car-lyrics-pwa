@@ -8,10 +8,10 @@
 //
 // The share id is a long random token: having the link is what grants access.
 
-const { key, redis, pipeline, getJson, setJson } = require('../lib/redis');
+const { q, t, LIVE_LYRICS } = require('../lib/db');
 const { send, query, readJson, rateLimited, spotifyUser, randomId, handle } = require('../lib/http');
 
-const SESSION_TTL_SEC = 12 * 3600;
+const SESSION_HOURS = 12;
 
 function validSessionId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{20,40}$/.test(id);
@@ -38,40 +38,51 @@ async function ownedSession(req, id) {
   const user = await spotifyUser(req);
   if (!user) return { error: [401, 'sign in with Spotify'] };
   if (!validSessionId(id)) return { error: [400, 'invalid share id'] };
-  const session = await getJson(key('sess', id));
-  if (!session) return { error: [404, 'this share has ended'] };
-  if (session.ownerId !== user.id) return { error: [403, 'only the driver can update this share'] };
-  return { user, session };
+  const { rows } = await q(`SELECT owner_id FROM ${t('sessions')} WHERE id = $1 AND expires_at > now()`, [id]);
+  if (!rows.length) return { error: [404, 'this share has ended'] };
+  if (rows[0].owner_id !== user.id) return { error: [403, 'only the driver can update this share'] };
+  return { user };
 }
 
 module.exports = handle(async (req, res) => {
-  const q = query(req);
-  const action = q.get('action');
+  const params = query(req);
+  const action = params.get('action');
 
   // ---- Passenger: read the shared state ----
   if (req.method === 'GET') {
-    const id = q.get('id');
+    const id = params.get('id');
     if (!validSessionId(id)) return send(res, 400, { error: 'invalid share id' });
     if (await rateLimited(req, 'session-get', 3000, 3600)) return send(res, 429, { error: 'too many requests' });
 
-    const [rawSession, rawState] = await pipeline([['GET', key('sess', id)], ['GET', key('sess-state', id)]]);
-    if (!rawSession) return send(res, 404, { error: 'this share has ended' });
-    const session = JSON.parse(rawSession);
-    const state = rawState ? JSON.parse(rawState) : null;
+    const { rows } = await q(
+      `SELECT owner_name, expires_at, state, state_at FROM ${t('sessions')} WHERE id = $1 AND expires_at > now()`,
+      [id]
+    );
+    if (!rows.length) return send(res, 404, { error: 'this share has ended' });
+    const session = rows[0];
 
     const now = Date.now();
-    const body = { ownerName: session.ownerName, expiresAt: session.expiresAt, state: null, now };
+    const body = { ownerName: session.owner_name, expiresAt: new Date(session.expires_at).getTime(), state: null, now };
+    const state = session.state;
     if (state) {
       // Where the song is right now, from the driver's last update
-      const elapsed = state.isPlaying ? (now - state.at) / 1000 : 0;
+      const at = new Date(session.state_at).getTime();
+      const elapsed = state.isPlaying ? (now - at) / 1000 : 0;
       body.state = state;
       body.position = Math.min(state.durationSec || Infinity, state.progressSec + elapsed);
 
       // Lyrics only when the passenger doesn't have this song's yet
-      if (state.key && q.get('have') !== state.key) {
-        const [rawEntry, rawOffset] = await pipeline([['GET', key('lyr', state.key)], ['GET', key('off', state.key)]]);
-        body.lyrics = rawEntry ? JSON.parse(rawEntry) : null;
-        body.offset = rawOffset !== null && rawOffset !== undefined ? Number(rawOffset) : null;
+      if (state.key && params.get('have') !== state.key) {
+        const lyr = await q(
+          `SELECT l.entry, o.offset_sec
+             FROM (SELECT $1::text AS id) k
+             LEFT JOIN ${t('lyrics')} l ON l.id = k.id AND ${LIVE_LYRICS}
+             LEFT JOIN ${t('offsets')} o ON o.id = k.id`,
+          [state.key]
+        );
+        body.lyrics = lyr.rows[0]?.entry || null;
+        const off = lyr.rows[0]?.offset_sec;
+        body.offset = off === null || off === undefined ? null : Number(off);
       }
     }
     return send(res, 200, body);
@@ -86,19 +97,21 @@ module.exports = handle(async (req, res) => {
     if (await rateLimited(req, 'session-create', 30, 3600)) return send(res, 429, { error: 'too many requests' });
 
     // Reuse the driver's current share if it is still running
-    const existingId = await redis('GET', key('owner-sess', user.id));
-    if (existingId) {
-      const existing = await getJson(key('sess', existingId));
-      if (existing) return send(res, 200, { id: existingId, expiresAt: existing.expiresAt });
+    const existing = await q(
+      `SELECT id, expires_at FROM ${t('sessions')} WHERE owner_id = $1 AND expires_at > now() ORDER BY created_at DESC LIMIT 1`,
+      [user.id]
+    );
+    if (existing.rows.length) {
+      return send(res, 200, { id: existing.rows[0].id, expiresAt: new Date(existing.rows[0].expires_at).getTime() });
     }
 
     const id = randomId(18);
-    const expiresAt = Date.now() + SESSION_TTL_SEC * 1000;
-    await pipeline([
-      ['SET', key('sess', id), JSON.stringify({ ownerId: user.id, ownerName: user.name, createdAt: Date.now(), expiresAt }), 'EX', SESSION_TTL_SEC],
-      ['SET', key('owner-sess', user.id), id, 'EX', SESSION_TTL_SEC]
-    ]);
-    return send(res, 200, { id, expiresAt });
+    const { rows } = await q(
+      `INSERT INTO ${t('sessions')} (id, owner_id, owner_name, expires_at)
+       VALUES ($1, $2, $3, now() + make_interval(hours => $4)) RETURNING expires_at`,
+      [id, user.id, user.name, SESSION_HOURS]
+    );
+    return send(res, 200, { id, expiresAt: new Date(rows[0].expires_at).getTime() });
   }
 
   const body = await readJson(req);
@@ -109,18 +122,12 @@ module.exports = handle(async (req, res) => {
     const state = cleanState(body.state);
     if (!state) return send(res, 400, { error: 'state is required' });
     if (await rateLimited(req, 'session-update', 2000, 3600)) return send(res, 429, { error: 'too many requests' });
-    const ttl = Math.max(1, Number(await redis('TTL', key('sess', body.id))));
-    await setJson(key('sess-state', body.id), { ...state, at: Date.now() }, ttl);
+    await q(`UPDATE ${t('sessions')} SET state = $2, state_at = now() WHERE id = $1`, [body.id, state]);
     return send(res, 200, { ok: true });
   }
 
   if (action === 'end') {
-    const session = await getJson(key('sess', body.id));
-    await pipeline([
-      ['DEL', key('sess', body.id)],
-      ['DEL', key('sess-state', body.id)],
-      ['DEL', key('owner-sess', session.ownerId)]
-    ]);
+    await q(`DELETE FROM ${t('sessions')} WHERE id = $1`, [body.id]);
     return send(res, 200, { ok: true });
   }
 

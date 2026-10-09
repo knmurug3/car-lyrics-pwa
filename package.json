@@ -1,0 +1,11 @@
+{
+  "name": "car-lyrics-pwa",
+  "private": true,
+  "description": "Synced Spotify lyrics for the passenger seat, with a private lyrics database and live sharing",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
+}

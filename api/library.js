@@ -5,51 +5,56 @@
 //
 // POST /api/library?action=enqueue  { tracks: [{ id, title, artists, album, durationSec }] }
 // POST /api/library?action=process  -> { processed, found, missing, remaining }
-// GET  /api/library?action=status   -> { total, withLyrics, queued, missing }
+// GET  /api/library?action=status   -> { total, withLyrics, queued, missing, lastSync }
 // GET  /api/library?action=cron     (Vercel Cron, CRON_SECRET) keeps going once a day
 
 const { findLyrics, dominantIndicScript, detectSongLanguage, cleanSongTitle } = require('../lib/lyrics-engine');
 const { findOnTamil2Lyrics } = require('../lib/tamil2lyrics');
-const { key, redis, pipeline, getJson, setJson } = require('../lib/redis');
+const { q, t, LIVE_LYRICS } = require('../lib/db');
 const { saveEntry, validId } = require('../lib/store');
 const { send, query, readJson, spotifyUser, handle } = require('../lib/http');
 
 const MAX_TRACKS_PER_ENQUEUE = 500;
 const PROCESS_BUDGET_MS = 40000; // stay well inside the function time limit
 const CONCURRENCY = 3; // be gentle with LRCLIB and tamil2lyrics
-const MISS_RETRY_SEC = 3 * 24 * 3600;
+const MISS_RETRY = '3 days';
+const LOCK_KEY = 'library_sync_lock';
 
-function cleanTrack(t) {
-  if (!t || !validId(t.id)) return null;
+function cleanTrack(tr) {
+  if (!tr || !validId(tr.id)) return null;
   const str = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
   const track = {
-    id: t.id,
-    title: str(t.title, 200),
-    artists: Array.isArray(t.artists) ? t.artists.map(a => str(a, 100)).filter(Boolean).slice(0, 6) : [],
-    album: str(t.album, 200),
-    durationSec: Number(t.durationSec) > 0 ? Number(t.durationSec) : 0
+    id: tr.id,
+    title: str(tr.title, 200),
+    artists: Array.isArray(tr.artists) ? tr.artists.map(a => str(a, 100)).filter(Boolean).slice(0, 6) : [],
+    album: str(tr.album, 200),
+    durationSec: Number(tr.durationSec) > 0 ? Number(tr.durationSec) : 0
   };
   return track.title ? track : null;
 }
 
 async function enqueue(tracks) {
-  const clean = tracks.map(cleanTrack).filter(Boolean).slice(0, MAX_TRACKS_PER_ENQUEUE);
-  if (!clean.length) return { added: 0 };
+  const clean = [...new Map(tracks.map(cleanTrack).filter(Boolean).map(tr => [tr.id, tr])).values()]
+    .slice(0, MAX_TRACKS_PER_ENQUEUE);
+  if (!clean.length) return { added: 0, alreadyKnown: 0 };
 
-  // Skip songs we already know about (with lyrics, missing, or already queued)
-  const known = await pipeline(clean.map(t => ['SISMEMBER', key('lib', 'tracks'), t.id]));
-  const fresh = clean.filter((_, i) => !known[i]);
-  if (fresh.length) {
-    const cmds = [];
-    fresh.forEach((t) => {
-      cmds.push(['SET', key('trk', t.id), JSON.stringify(t)]);
-      cmds.push(['SADD', key('lib', 'tracks'), t.id]);
-      cmds.push(['RPUSH', key('lib', 'queue'), t.id]);
-    });
-    await pipeline(cmds);
-  }
-  await redis('SET', key('lib', 'lastSync'), Date.now());
-  return { added: fresh.length, alreadyKnown: clean.length - fresh.length };
+  // New songs only; ones that already have lyrics (e.g. found on a phone) start as found
+  const { rows } = await q(
+    `INSERT INTO ${t('tracks')} (id, info, status)
+     SELECT u.id, u.info,
+            CASE WHEN EXISTS (SELECT 1 FROM ${t('lyrics')} l WHERE l.id = u.id AND ${LIVE_LYRICS})
+                 THEN 'found' ELSE 'queued' END
+       FROM unnest($1::text[], $2::jsonb[]) AS u(id, info)
+     ON CONFLICT (id) DO NOTHING
+     RETURNING id`,
+    [clean.map(tr => tr.id), clean.map(tr => JSON.stringify(tr))]
+  );
+  await q(
+    `INSERT INTO ${t('meta')} (key, value) VALUES ('last_sync', $1)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [String(Date.now())]
+  );
+  return { added: rows.length, alreadyKnown: clean.length - rows.length };
 }
 
 function buildQuery(track) {
@@ -85,15 +90,16 @@ async function lookUp(track) {
   return entry;
 }
 
-async function processOne(id, totals) {
-  const [hasLyrics, track] = await Promise.all([redis('EXISTS', key('lyr', id)), getJson(key('trk', id))]);
-  if (hasLyrics || !track) return;
-  const entry = await lookUp(track);
-  if (entry && (await saveEntry(id, entry))) {
+async function processOne(row, totals) {
+  const entry = await lookUp(row.info);
+  if (entry && (await saveEntry(row.id, entry))) {
     totals.found++;
   } else {
     totals.missing++;
-    await pipeline([['SADD', key('lib', 'missing'), id], ['SET', key('miss', id), 1, 'EX', MISS_RETRY_SEC]]);
+    await q(
+      `UPDATE ${t('tracks')} SET status = 'missing', retry_at = now() + interval '${MISS_RETRY}', updated_at = now() WHERE id = $1`,
+      [row.id]
+    );
   }
 }
 
@@ -102,39 +108,70 @@ async function processQueue(maxTracks) {
   const totals = { processed: 0, found: 0, missing: 0 };
 
   while (totals.processed < maxTracks && Date.now() - started < PROCESS_BUDGET_MS) {
-    const batchSize = Math.min(CONCURRENCY, maxTracks - totals.processed);
-    const ids = await redis('LPOP', key('lib', 'queue'), batchSize);
-    if (!ids || !ids.length) break;
-    await Promise.all(ids.map(id => processOne(id, totals).catch(async (err) => {
-      console.warn('lookup failed', id, err.message);
-      await redis('RPUSH', key('lib', 'queue'), id); // try again later
+    // Claim a few queued songs; SKIP LOCKED keeps two runs from taking the same ones
+    const { rows } = await q(
+      `UPDATE ${t('tracks')} SET status = 'processing', updated_at = now()
+        WHERE id IN (SELECT id FROM ${t('tracks')} WHERE status = 'queued'
+                      ORDER BY added_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+        RETURNING id, info`,
+      [Math.min(CONCURRENCY, maxTracks - totals.processed)]
+    );
+    if (!rows.length) break;
+    await Promise.all(rows.map(row => processOne(row, totals).catch(async (err) => {
+      console.warn('lookup failed', row.id, err.message);
+      await q(`UPDATE ${t('tracks')} SET status = 'queued', updated_at = now() WHERE id = $1`, [row.id]);
     })));
-    totals.processed += ids.length;
+    totals.processed += rows.length;
   }
 
-  totals.remaining = await redis('LLEN', key('lib', 'queue'));
+  const { rows } = await q(`SELECT count(*)::int AS n FROM ${t('tracks')} WHERE status IN ('queued', 'processing')`);
+  totals.remaining = rows[0].n;
   return totals;
 }
 
-// Songs that had no lyrics anywhere get another look once their retry timer runs out
-async function requeueExpiredMisses() {
-  const missing = await redis('SMEMBERS', key('lib', 'missing'));
-  if (!missing?.length) return 0;
-  const waiting = await pipeline(missing.map(id => ['EXISTS', key('miss', id)]));
-  const ready = missing.filter((_, i) => !waiting[i]);
-  if (ready.length) await pipeline(ready.flatMap(id => [['SREM', key('lib', 'missing'), id], ['RPUSH', key('lib', 'queue'), id]]));
-  return ready.length;
+// Daily housekeeping: retry songs that had no lyrics, re-check expired unsynced lyrics,
+// un-stick interrupted work, and clear expired sessions / caches / rate-limit rows
+async function housekeeping() {
+  const retried = await q(
+    `UPDATE ${t('tracks')} SET status = 'queued', updated_at = now()
+      WHERE (status = 'missing' AND retry_at < now())
+         OR (status = 'processing' AND updated_at < now() - interval '5 minutes')
+         OR (status = 'found' AND NOT EXISTS (SELECT 1 FROM ${t('lyrics')} l WHERE l.id = ${t('tracks')}.id AND ${LIVE_LYRICS}))`
+  );
+  await q(`DELETE FROM ${t('lyrics')} WHERE expires_at < now() - interval '30 days'`);
+  await q(`DELETE FROM ${t('sessions')} WHERE expires_at < now()`);
+  await q(`DELETE FROM ${t('auth_cache')} WHERE expires_at < now()`);
+  await q(`DELETE FROM ${t('rate_limits')} WHERE expires_at < now()`);
+  return retried.rowCount;
 }
 
 async function status() {
-  const [total, withLyrics, queued, missing, lastSync] = await pipeline([
-    ['SCARD', key('lib', 'tracks')],
-    ['SCARD', key('lib', 'found')],
-    ['LLEN', key('lib', 'queue')],
-    ['SCARD', key('lib', 'missing')],
-    ['GET', key('lib', 'lastSync')]
-  ]);
-  return { total, withLyrics, queued, missing, lastSync: lastSync ? Number(lastSync) : null };
+  const { rows } = await q(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE EXISTS (SELECT 1 FROM ${t('lyrics')} l WHERE l.id = tr.id AND ${LIVE_LYRICS}))::int AS with_lyrics,
+            count(*) FILTER (WHERE tr.status IN ('queued', 'processing'))::int AS queued,
+            count(*) FILTER (WHERE tr.status = 'missing')::int AS missing,
+            (SELECT value FROM ${t('meta')} WHERE key = 'last_sync') AS last_sync
+       FROM ${t('tracks')} tr`
+  );
+  const r = rows[0];
+  return { total: r.total, withLyrics: r.with_lyrics, queued: r.queued, missing: r.missing, lastSync: r.last_sync ? Number(r.last_sync) : null };
+}
+
+// One sync run at a time across all devices (expires on its own if a run dies)
+async function acquireLock(owner) {
+  const { rows } = await q(
+    `INSERT INTO ${t('meta')} (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+       WHERE split_part(${t('meta')}.value, '|', 2)::bigint < $3
+     RETURNING key`,
+    [LOCK_KEY, `${owner}|${Date.now() + 55000}`, Date.now()]
+  );
+  return rows.length > 0;
+}
+
+async function releaseLock() {
+  await q(`DELETE FROM ${t('meta')} WHERE key = $1`, [LOCK_KEY]);
 }
 
 module.exports = handle(async (req, res) => {
@@ -143,8 +180,13 @@ module.exports = handle(async (req, res) => {
   if (action === 'cron') {
     const secret = process.env.CRON_SECRET;
     if (!secret || req.headers?.authorization !== `Bearer ${secret}`) return send(res, 401, { error: 'unauthorized' });
-    const requeued = await requeueExpiredMisses();
-    return send(res, 200, { requeued, ...(await processQueue(40)) });
+    const requeued = await housekeeping();
+    if (!(await acquireLock('cron'))) return send(res, 200, { requeued, busy: true });
+    try {
+      return send(res, 200, { requeued, ...(await processQueue(40)) });
+    } finally {
+      await releaseLock();
+    }
   }
 
   const user = await spotifyUser(req);
@@ -162,12 +204,11 @@ module.exports = handle(async (req, res) => {
 
   if (action === 'process') {
     // One sync at a time: two phones syncing would just double the work
-    const lock = await redis('SET', key('lib', 'processing'), user.id, 'NX', 'EX', 55);
-    if (!lock) return send(res, 200, { busy: true, ...(await status()) });
+    if (!(await acquireLock(user.id))) return send(res, 200, { busy: true, ...(await status()) });
     try {
       return send(res, 200, await processQueue(30));
     } finally {
-      await redis('DEL', key('lib', 'processing'));
+      await releaseLock();
     }
   }
 
