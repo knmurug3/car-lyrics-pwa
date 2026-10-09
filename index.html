@@ -15,11 +15,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="style.css?v=13" />
+  <link rel="stylesheet" href="style.css?v=14" />
 </head>
 <body>
   <!-- Ambient album background -->
-  <div id="ambient-bg" aria-hidden="true"></div>
+  <div id="ambient-bg" class="ambient visible" aria-hidden="true"></div>
+  <div id="ambient-bg-2" class="ambient" aria-hidden="true"></div>
   <div id="ambient-overlay" aria-hidden="true"></div>
 
   <div id="app">
@@ -55,6 +56,12 @@
 
     <!-- Synced lyrics -->
     <section class="lyrics-pane">
+    <!-- Shown when Spotify needs new permissions -->
+    <div id="reconnect-banner" class="banner" role="status" hidden>
+      <span>Reconnect Spotify to unlock playlist sync and tap-to-jump.</span>
+      <button id="reconnect-btn" class="btn btn-primary btn-small">Reconnect</button>
+      <button id="reconnect-dismiss" class="btn btn-link btn-small" aria-label="Dismiss for a week">Later</button>
+    </div>
     <main id="lyrics-container">
       <div class="state-message welcome">
         <h1>Lyrics that keep up with the road</h1>
@@ -99,6 +106,13 @@
     </div>
   </div>
 
+  <!-- First-run guide -->
+  <div id="guide" class="modal-overlay menu-overlay">
+    <div class="menu-sheet guide-sheet" role="dialog" aria-label="Welcome to CarLyrics">
+      <div id="guide-body" class="guide-body"></div>
+    </div>
+  </div>
+
   <!-- Menu: text size, full screen, lyrics library, sharing, account -->
   <div id="menu-modal" class="modal-overlay menu-overlay">
     <div class="menu-sheet" role="dialog" aria-labelledby="menu-title">
@@ -110,14 +124,14 @@
     </div>
   </div>
 
-  <script src="vendor/sanscript.min.js?v=13"></script>
-  <script src="vendor/qrcode.min.js?v=13"></script>
-  <script src="vendor/nosleep.min.js?v=13"></script>
+  <script src="vendor/sanscript.min.js?v=14"></script>
+  <script src="vendor/qrcode.min.js?v=14"></script>
+  <script src="vendor/nosleep.min.js?v=14"></script>
   <script type="module">
-    import anyAscii from './vendor/any-ascii.mjs?v=13';
+    import anyAscii from './vendor/any-ascii.mjs?v=14';
     window.anyAscii = anyAscii;
   </script>
-  <script src="lib/lyrics-engine.js?v=13"></script>
-  <script src="app.js?v=13"></script>
+  <script src="lib/lyrics-engine.js?v=14"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>

@@ -37,14 +37,23 @@ body {
 }
 
 /* Ambient blurred album background */
-#ambient-bg {
+.ambient {
+  opacity: 0;
+}
+
+.ambient.visible {
+  opacity: 1;
+}
+
+#ambient-bg,
+#ambient-bg-2 {
   position: fixed;
   inset: -60px;
   background-size: cover;
   background-position: center;
   filter: blur(90px) saturate(1.2) brightness(0.32);
   transform: scale(1.15);
-  transition: background-image 1.2s ease-in-out;
+  transition: opacity 1.2s ease-in-out, filter 1s ease;
   z-index: 0;
   pointer-events: none;
 }
@@ -882,4 +891,195 @@ body.passenger .lyric-line {
 /* Unsynced lyrics on estimated timing: tap the line being sung */
 .lyric-line.estimated {
   cursor: pointer;
+}
+
+/* ---------------------------------------------------------------
+   v14: smoother feel and easier use
+   --------------------------------------------------------------- */
+#lyrics-container {
+  position: relative; /* lines measure their position against the lyrics area */
+  transition: opacity 0.22s ease;
+}
+
+#lyrics-container.leaving {
+  opacity: 0;
+}
+
+.album-art {
+  transition: opacity 0.2s ease;
+}
+
+.album-art.swapping {
+  opacity: 0;
+}
+
+/* Bigger, easier targets */
+.controls .btn {
+  min-height: 48px;
+  padding: 12px 20px;
+  font-size: 1rem;
+}
+
+.timing-btn {
+  min-height: 44px;
+  padding: 10px 16px;
+}
+
+.floating-action {
+  min-height: 48px;
+  padding: 12px 20px;
+  font-size: 1rem;
+}
+
+@media (max-width: 520px) {
+  .controls .btn {
+    min-height: 44px;
+    padding: 10px 16px;
+  }
+}
+
+/* Lyrics-only mode: controls fade away while lyrics play */
+.now-playing,
+.now-playing .meta,
+.now-playing .controls,
+.now-playing .progress-times,
+.now-playing .album-art,
+.timing,
+.floating-action {
+  transition: opacity 0.6s ease, background-color 0.6s ease, border-color 0.6s ease;
+}
+
+body.idle .now-playing .meta,
+body.idle .now-playing .controls,
+body.idle .now-playing .progress-times,
+body.idle .timing,
+body.idle .floating-action,
+body.idle .banner {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.idle {
+  cursor: none;
+}
+
+@media (max-width: 899px), (orientation: portrait) {
+  body.idle .now-playing {
+    background: transparent;
+    border-color: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body.idle .now-playing .album-art {
+    opacity: 0;
+  }
+}
+
+@media (min-width: 900px) and (orientation: landscape) {
+  body.idle .now-playing .album-art {
+    opacity: 0.55;
+  }
+}
+
+/* Night mode: dimmer for a dark car */
+body.night {
+  --text: #bfbfc6;
+  --text-sub: #7c7c85;
+  --text-dim: rgba(191, 191, 198, 0.34);
+}
+
+body.night #ambient-bg,
+body.night #ambient-bg-2 {
+  filter: blur(90px) saturate(1) brightness(0.16);
+}
+
+body.night .album-art {
+  filter: brightness(0.75);
+}
+
+body.night .btn-primary {
+  filter: brightness(0.8);
+}
+
+/* Menu labels for the extra display options */
+.menu-label {
+  margin-top: 6px;
+  font-size: 0.88rem;
+  color: var(--text-sub);
+}
+
+/* Reconnect banner */
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px clamp(12px, 3vw, 32px) 0;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+  z-index: 3;
+}
+
+.banner span {
+  flex: 1 1 220px;
+}
+
+/* First-run guide */
+.guide-sheet {
+  max-width: 460px;
+}
+
+.guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 24px 24px;
+}
+
+.guide-body h3 {
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.guide-body p {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--text-sub);
+}
+
+.guide-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.guide-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.guide-dots span.on {
+  background: var(--accent);
+}
+
+.guide-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #lyrics-container,
+  .album-art,
+  #ambient-bg,
+  #ambient-bg-2 {
+    transition: none;
+  }
 }

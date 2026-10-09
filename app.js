@@ -53,6 +53,12 @@ let jumpNextScroll = true; // first positioning after new lyrics: jump, don't ra
 // UI Elements
 const dom = {
   ambientBg: document.getElementById('ambient-bg'),
+  ambientBg2: document.getElementById('ambient-bg-2'),
+  guide: document.getElementById('guide'),
+  guideBody: document.getElementById('guide-body'),
+  reconnectBanner: document.getElementById('reconnect-banner'),
+  reconnectBtn: document.getElementById('reconnect-btn'),
+  reconnectDismiss: document.getElementById('reconnect-dismiss'),
   albumArt: document.getElementById('album-art'),
   trackTitle: document.getElementById('track-title'),
   artistName: document.getElementById('artist-name'),
@@ -96,6 +102,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   registerServiceWorker();
   setupEventListeners();
   applyTextSize();
+  applyNight();
+  setInterval(applyNight, 60000);
+  setupIdle();
   startClock();
   loadOffsets();
 
@@ -122,6 +131,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   } else if (code) {
     await handleOAuthCallback(code, params.get('state'));
   }
+
+  if (!localStorage.getItem(GUIDE_KEY)) showGuide();
 
   // A saved login is enough to start: if there is no signal right now,
   // polling renews the token as soon as the network comes back
@@ -205,6 +216,7 @@ function saveTokens(data) {
   // Spotify may rotate the refresh token: always keep the newest one
   if (data.refresh_token) refreshToken = data.refresh_token;
   if (data.scope) grantedScopes = data.scope;
+  updateReconnectBanner();
 
   localStorage.setItem(TOKEN_KEYS.access, accessToken);
   localStorage.setItem(TOKEN_KEYS.expires, tokenExpiresAt.toString());
@@ -321,6 +333,7 @@ function signOut(message) {
 
   dom.loginBtn.hidden = false;
   dom.statusBadge.hidden = true;
+  updateReconnectBanner();
   if (message) renderStateMessage('Signed out of Spotify', message);
 }
 
@@ -331,6 +344,7 @@ function onSpotifyAuthenticated() {
   dom.loginBtn.hidden = true;
   dom.statusBadge.hidden = false;
   dom.statusText.textContent = 'Connected';
+  updateReconnectBanner();
   if (!isDemoMode) {
     renderStateMessage('Play something on Spotify', 'Lyrics show up here as soon as a song starts.');
   }
@@ -374,6 +388,7 @@ function startClock() {
 
     if (isPlaying && currentDurationSec > 0) {
       currentPositionSec += elapsed;
+      applyPositionCorrection(elapsed);
       if (currentPositionSec > currentDurationSec) {
         currentPositionSec = isDemoMode ? 0 : currentDurationSec;
       }
@@ -483,9 +498,8 @@ async function pollCurrentlyPlaying() {
     const track = data.item;
     // progress_ms is already stale by the time it reaches us: add half the round trip
     const latencySec = data.is_playing ? (performance.now() - sentAt) / 2000 : 0;
-    currentPositionSec = data.progress_ms / 1000 + latencySec;
+    syncPosition(data.progress_ms / 1000 + latencySec, data.is_playing && isPlaying && makeTrackKey(track) === currentTrackKey);
     currentDurationSec = track.duration_ms / 1000;
-    lastClockTick = performance.now();
     setPlaybackStatus(data.is_playing, data.is_playing ? 'Playing' : 'Paused');
 
     const info = trackInfo(track);
@@ -500,9 +514,7 @@ async function pollCurrentlyPlaying() {
       const artUrl = track.album?.images?.[0]?.url || '';
       info.artUrl = artUrl;
       if (artUrl) {
-        dom.albumArt.src = artUrl;
-        dom.ambientBg.style.backgroundImage = `url('${artUrl}')`;
-        applyAccentFromArt(track.album.images[track.album.images.length - 1]?.url || artUrl);
+        setArtwork(artUrl, track.album.images[track.album.images.length - 1]?.url || artUrl);
       }
 
       fetchLyrics(info);
@@ -529,6 +541,8 @@ async function prefetchNextTrack() {
     const next = (data.queue || []).find(item => item && item.type === 'track');
     if (!next) return;
     const info = trackInfo(next);
+    const cover = next.album?.images?.[0]?.url;
+    if (cover) new Image().src = cover; // so the next cover appears without a blank moment
     if (info.key !== currentTrackKey) await resolveLyrics(info);
   } catch (err) {
     console.warn('Prefetch failed:', err);
@@ -557,6 +571,8 @@ async function seekTo(seconds) {
   try {
     const res = await spotifyFetch(`/me/player/seek?position_ms=${Math.round(target * 1000)}`, { method: 'PUT' });
     if (res && res.ok) {
+      haptic();
+      positionCorrection = 0;
       currentPositionSec = target;
       lastClockTick = performance.now();
       userScrollUntil = 0;
@@ -1026,6 +1042,8 @@ function resetLyricsState() {
 
 async function fetchLyrics(info) {
   const requestId = ++lyricsRequestId;
+  await fadeOutLyrics();
+  if (requestId !== lyricsRequestId) return;
   resetLyricsState();
 
   const cached = await getCachedLyrics(info.key);
@@ -1165,6 +1183,7 @@ function parseLRC(lrcText, requestId) {
 }
 
 function renderLoading() {
+  fadeInLyrics();
   const wrapper = document.createElement('div');
   wrapper.className = 'skeleton';
   wrapper.setAttribute('aria-label', 'Loading lyrics');
@@ -1179,6 +1198,7 @@ function renderLoading() {
 }
 
 function renderStateMessage(title, message, action = null) {
+  fadeInLyrics();
   const wrapper = document.createElement('div');
   wrapper.className = 'state-message';
   const h2 = document.createElement('h2');
@@ -1319,6 +1339,7 @@ function refreshEstimate() {
 // "This line is being sung right now"
 function markLineSung(index) {
   if (!plainInfo || plainInfo.key !== currentTrackKey) return;
+  haptic();
   const time = currentPositionSec;
   // A new tap wins over earlier taps it contradicts
   const kept = getAnchors(plainInfo.key).filter(a =>
@@ -1380,6 +1401,7 @@ function renderPlainLyrics(plainText, meta = {}, info = currentTrackInfo, reques
 
   const credit = sourceCredit(meta);
   dom.lyricsContainer.replaceChildren(header, ...nodes, ...(credit ? [credit] : []));
+  fadeInLyrics();
   dom.lyricsContainer.scrollTop = 0;
   jumpNextScroll = true;
   updatePlainLabel();
@@ -1413,6 +1435,7 @@ function renderLyrics(lyricItems, meta = {}) {
   });
   const credit = sourceCredit(meta);
   dom.lyricsContainer.replaceChildren(...nodes, ...(credit ? [credit] : []));
+  fadeInLyrics();
   dom.lyricsContainer.scrollTop = 0;
   jumpNextScroll = true;
 }
@@ -1426,6 +1449,10 @@ function highlightActiveLyric(seconds) {
     if (lyrics[i].timestamp > position) break;
     activeIndex = i;
   }
+
+  // Don't step back a line for a small wobble near a line change; only for a real seek back
+  const shownIndex = activeLyricId ? lyrics.findIndex(l => l.id === activeLyricId) : -1;
+  if (shownIndex >= 0 && activeIndex < shownIndex && position > lyrics[shownIndex].timestamp - 1) activeIndex = shownIndex;
 
   const activeId = activeIndex >= 0 ? lyrics[activeIndex].id : null;
   if (activeLyricId === activeId) return;
@@ -1455,14 +1482,14 @@ function scrollToActiveLine() {
   const el = dom.lyricsContainer;
   const distance = Math.abs(target.offsetTop + target.offsetHeight / 2 - (el.scrollTop + el.clientHeight / 2));
   // Glide one line at a time; jump (don't race) when lyrics just loaded or we're far off
-  const jump = jumpNextScroll || distance > el.clientHeight * 1.5
-    || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const jump = jumpNextScroll || distance > el.clientHeight * 1.5;
   jumpNextScroll = false;
-  target.scrollIntoView({ behavior: jump ? 'auto' : 'smooth', block: 'center' });
+  centerElement(target, jump);
 }
 
 // A passenger scrolling to read ahead or back: hold auto-scroll for a few seconds
 function onUserScroll() {
+  cancelGlide();
   userScrollUntil = Date.now() + USER_SCROLL_PAUSE_MS;
   needsRecenter = true;
 }
@@ -1541,11 +1568,12 @@ function updateSyncView() {
     el.classList.toggle('past', i < index);
   });
   const next = document.getElementById(`sync-line-${index}`);
-  if (next) next.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (next) centerElement(next, false);
 }
 
 function syncTap() {
   if (!syncState || syncState.trackKey !== currentTrackKey) return exitSyncMode(false);
+  haptic(8);
   syncState.times[syncState.index] = currentPositionSec;
   syncState.index++;
   if (syncState.index >= syncState.lines.length) {
@@ -1969,9 +1997,8 @@ async function pollPassenger() {
     if (Array.isArray(state.anchors)) applyRemoteAnchors(state.key, state.anchors);
     passenger.offset = Number.isFinite(state.offset) ? state.offset : DEFAULT_TIMING_OFFSET;
     const latencySec = state.isPlaying ? (performance.now() - sentAt) / 2000 : 0;
-    currentPositionSec = data.position + latencySec;
+    syncPosition(data.position + latencySec, state.isPlaying && isPlaying && state.key === currentTrackKey);
     currentDurationSec = state.durationSec;
-    lastClockTick = performance.now();
     setPlaybackStatus(state.isPlaying, `Following ${data.ownerName}`);
 
     if (state.key !== currentTrackKey) {
@@ -1982,14 +2009,14 @@ async function pollPassenger() {
       dom.trackTitle.textContent = info.title;
       dom.artistName.textContent = info.artists.join(', ');
       if (state.artUrl) {
-        dom.albumArt.src = state.artUrl;
-        dom.ambientBg.style.backgroundImage = `url('${state.artUrl}')`;
-        applyAccentFromArt(state.artUrl);
+        setArtwork(state.artUrl);
       }
       passenger.haveKey = state.key;
       if (data.lyrics) {
         // The server sent this song's lyrics along with the state
         const requestId = ++lyricsRequestId;
+        await fadeOutLyrics();
+        if (requestId !== lyricsRequestId) return;
         resetLyricsState();
         cacheLyrics(info.key, data.lyrics);
         renderLyricsData(info, data.lyrics, requestId);
@@ -2062,6 +2089,30 @@ function renderMenu() {
       closeMenu();
     }));
   }
+  const night = document.createElement('div');
+  night.className = 'segmented';
+  [['auto', 'Auto'], ['on', 'On'], ['off', 'Off']].forEach(([value, label]) => {
+    const on = nightSetting() === value;
+    const btn = menuButton(label, () => { localStorage.setItem(NIGHT_KEY, value); applyNight(); renderMenu(); }, on ? 'btn-primary' : 'btn-quiet');
+    btn.setAttribute('aria-pressed', String(on));
+    night.append(btn);
+  });
+  display.push(menuText('Night mode (dimmer screen; Auto is 7 PM to 6 AM)', 'menu-label'), night);
+
+  const idle = document.createElement('div');
+  idle.className = 'segmented';
+  [['on', 'On'], ['off', 'Off']].forEach(([value, label]) => {
+    const on = (idleEnabled() ? 'on' : 'off') === value;
+    const btn = menuButton(label, () => {
+      localStorage.setItem(IDLE_KEY, value);
+      if (value === 'off') document.body.classList.remove('idle');
+      scheduleIdle();
+      renderMenu();
+    }, on ? 'btn-primary' : 'btn-quiet');
+    btn.setAttribute('aria-pressed', String(on));
+    idle.append(btn);
+  });
+  display.push(menuText('Hide controls while lyrics play (tap anywhere to bring them back)', 'menu-label'), idle);
   sections.push(menuSection('Display', ...display));
 
   if (passenger) {
@@ -2105,6 +2156,238 @@ function renderLibraryStatus() {
 }
 
 // -------------------------------------------------------------
+// Feel: smooth position, glide scrolling, crossfades, lyrics-only mode,
+// night mode, haptics, first-run guide, reconnect banner
+// -------------------------------------------------------------
+const SNAP_THRESHOLD_SEC = 1.2; // bigger jumps are real seeks: snap to them
+const CORRECTION_RATE = 0.5; // ease smaller differences in at up to 0.5s per second
+let positionCorrection = 0;
+
+// A new position from Spotify (or the driver): ease small differences in so the
+// highlight never flickers at line changes; snap to big ones
+function syncPosition(target, glide) {
+  const diff = target - currentPositionSec;
+  if (!glide || Math.abs(diff) > SNAP_THRESHOLD_SEC) {
+    currentPositionSec = target;
+    positionCorrection = 0;
+  } else {
+    positionCorrection = diff;
+  }
+  lastClockTick = performance.now();
+}
+
+function applyPositionCorrection(elapsed) {
+  if (!positionCorrection) return;
+  const step = Math.sign(positionCorrection) * Math.min(Math.abs(positionCorrection), elapsed * CORRECTION_RATE);
+  currentPositionSec += step;
+  positionCorrection -= step;
+  if (Math.abs(positionCorrection) < 0.005) positionCorrection = 0;
+}
+
+// ---- Glide scrolling: same speed and easing every time ----
+let glideFrame = null;
+
+function cancelGlide() {
+  if (glideFrame) cancelAnimationFrame(glideFrame);
+  glideFrame = null;
+}
+
+function glideTo(top, duration = 650) {
+  const el = dom.lyricsContainer;
+  cancelGlide();
+  const start = el.scrollTop;
+  const delta = top - start;
+  if (Math.abs(delta) < 1) return;
+  const began = performance.now();
+  const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const step = (now) => {
+    const p = Math.min(1, (now - began) / duration);
+    el.scrollTop = start + delta * ease(p);
+    glideFrame = p < 1 ? requestAnimationFrame(step) : null;
+  };
+  glideFrame = requestAnimationFrame(step);
+}
+
+// Put an element in the middle of the lyrics area
+function centerElement(target, jump) {
+  const el = dom.lyricsContainer;
+  const max = el.scrollHeight - el.clientHeight;
+  const top = Math.max(0, Math.min(max, target.offsetTop + target.offsetHeight / 2 - el.clientHeight / 2));
+  if (jump || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    cancelGlide();
+    el.scrollTop = top;
+  } else {
+    glideTo(top);
+  }
+}
+
+// ---- Crossfades between songs ----
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function fadeOutLyrics() {
+  const el = dom.lyricsContainer;
+  if (reduceMotion() || !el.querySelector('.lyric-line')) return Promise.resolve();
+  el.classList.add('leaving');
+  return new Promise(r => setTimeout(r, 220));
+}
+
+function fadeInLyrics() {
+  dom.lyricsContainer.classList.remove('leaving');
+}
+
+let ambientFront = null;
+
+function setArtwork(url, smallUrl = url) {
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => {
+    // Album art: quick fade through
+    dom.albumArt.classList.add('swapping');
+    setTimeout(() => {
+      dom.albumArt.src = url;
+      dom.albumArt.classList.remove('swapping');
+    }, reduceMotion() ? 0 : 200);
+    // Background: crossfade two layers
+    const layers = [dom.ambientBg, dom.ambientBg2];
+    ambientFront = ambientFront || dom.ambientBg;
+    const back = layers.find(l => l !== ambientFront);
+    back.style.backgroundImage = `url('${url}')`;
+    back.classList.add('visible');
+    ambientFront.classList.remove('visible');
+    ambientFront = back;
+  };
+  img.onerror = () => { dom.albumArt.src = url; }; // let the placeholder fallback handle it
+  img.src = url;
+  applyAccentFromArt(smallUrl);
+}
+
+// ---- Lyrics-only mode: controls fade away while you watch ----
+const IDLE_KEY = 'carlyrics_hide_controls';
+const IDLE_AFTER_MS = 5000;
+let idleTimer = null;
+let swallowClickUntil = 0;
+
+function idleEnabled() {
+  return localStorage.getItem(IDLE_KEY) !== 'off';
+}
+
+function canIdle() {
+  return idleEnabled() && isPlaying && lyrics.length > 0 && !syncState
+    && !dom.menuModal.classList.contains('open') && !dom.qrModal.classList.contains('open')
+    && !dom.guide.classList.contains('open') && dom.toast.hidden;
+}
+
+function scheduleIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (canIdle()) document.body.classList.add('idle');
+    else scheduleIdle();
+  }, IDLE_AFTER_MS);
+}
+
+function wake(e) {
+  if (document.body.classList.contains('idle')) {
+    document.body.classList.remove('idle');
+    // The tap that brings the controls back shouldn't also press something
+    if (e?.type === 'pointerdown') swallowClickUntil = Date.now() + 600;
+  }
+  scheduleIdle();
+}
+
+function setupIdle() {
+  ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(type => document.addEventListener(type, wake, { capture: true, passive: true }));
+  document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') wake(e); }, { passive: true });
+  document.addEventListener('click', (e) => {
+    if (Date.now() < swallowClickUntil) {
+      swallowClickUntil = 0;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
+  scheduleIdle();
+}
+
+// ---- Night mode: dimmer screen in a dark car ----
+const NIGHT_KEY = 'carlyrics_night'; // auto | on | off
+
+function nightSetting() {
+  return localStorage.getItem(NIGHT_KEY) || 'auto';
+}
+
+function applyNight() {
+  const hour = new Date().getHours();
+  const setting = nightSetting();
+  const on = setting === 'on' || (setting === 'auto' && (hour >= 19 || hour < 6));
+  document.body.classList.toggle('night', on);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', on ? '#09090b' : '#111214');
+}
+
+// ---- Haptics: a tiny buzz confirms a tap without looking (Android) ----
+function haptic(ms = 12) {
+  try { navigator.vibrate?.(ms); } catch (err) {}
+}
+
+// ---- First-run guide ----
+const GUIDE_KEY = 'carlyrics_onboarded_v1';
+const GUIDE_STEPS = [
+  { title: 'Lyrics for the road', text: 'Connect Spotify and the lyrics follow your music, in English letters, big enough to read from the back seat.' },
+  { title: 'Share with passengers', text: 'Tap Share and let passengers scan the code. They follow your music and lyrics on their own phone, no Spotify needed.' },
+  { title: 'Lyrics a little off?', text: 'Tap the line being sung. That fixes the timing for this song on every device.' }
+];
+let guideStep = 0;
+
+function showGuide() {
+  guideStep = 0;
+  renderGuide();
+  dom.guide.classList.add('open');
+}
+
+function closeGuide() {
+  dom.guide.classList.remove('open');
+  try { localStorage.setItem(GUIDE_KEY, '1'); } catch (err) {}
+  scheduleIdle();
+}
+
+function renderGuide() {
+  const step = GUIDE_STEPS[guideStep];
+  const last = guideStep === GUIDE_STEPS.length - 1;
+  const dots = document.createElement('div');
+  dots.className = 'guide-dots';
+  GUIDE_STEPS.forEach((_, i) => {
+    const dot = document.createElement('span');
+    if (i === guideStep) dot.className = 'on';
+    dots.append(dot);
+  });
+  const h = document.createElement('h3');
+  h.textContent = step.title;
+  const p = document.createElement('p');
+  p.textContent = step.text;
+  const actions = document.createElement('div');
+  actions.className = 'guide-actions';
+  if (!last) actions.append(menuButton('Skip', closeGuide, 'btn-link'));
+  actions.append(menuButton(last ? 'Get started' : 'Next', () => {
+    if (last) return closeGuide();
+    guideStep++;
+    renderGuide();
+  }, 'btn-primary'));
+  dom.guideBody.replaceChildren(dots, h, p, actions);
+}
+
+// ---- Reconnect banner: when Spotify needs new permissions ----
+const BANNER_DISMISS_KEY = 'carlyrics_reconnect_dismissed_until';
+
+function missingScopes() {
+  return SPOTIFY_SCOPES.split(' ').filter(s => !hasScope(s));
+}
+
+function updateReconnectBanner() {
+  if (!dom.reconnectBanner) return;
+  const dismissedUntil = Number(localStorage.getItem(BANNER_DISMISS_KEY) || 0);
+  dom.reconnectBanner.hidden = !(isAuthenticated && !passenger && missingScopes().length && Date.now() > dismissedUntil);
+}
+
+
+// -------------------------------------------------------------
 // In-Car Demo Mode (Instant Test without Spotify Login)
 // -------------------------------------------------------------
 function startDemoMode() {
@@ -2124,9 +2407,7 @@ function startDemoMode() {
   setPlaybackStatus(true, 'Demo');
 
   const demoAlbumArt = 'https://i.scdn.co/image/ab67616d0000b2738863bc11d2aa12b54f5aeb36';
-  dom.albumArt.src = demoAlbumArt;
-  dom.ambientBg.style.backgroundImage = `url('${demoAlbumArt}')`;
-  applyAccentFromArt(demoAlbumArt);
+  setArtwork(demoAlbumArt);
 
   const demoLRC = `
 [00:12.45] Yeah
@@ -2221,6 +2502,11 @@ function setupEventListeners() {
 
   dom.timingEarlier.addEventListener('click', () => changeTimingOffset(0.5));
   dom.timingLater.addEventListener('click', () => changeTimingOffset(-0.5));
+  dom.reconnectBtn.addEventListener('click', loginWithSpotify);
+  dom.reconnectDismiss.addEventListener('click', () => {
+    localStorage.setItem(BANNER_DISMISS_KEY, String(Date.now() + 7 * 24 * 3600 * 1000));
+    updateReconnectBanner();
+  });
   dom.menuBtn.addEventListener('click', openMenu);
   dom.closeMenuBtn.addEventListener('click', closeMenu);
   dom.menuModal.addEventListener('click', (e) => { if (e.target === dom.menuModal) closeMenu(); });
@@ -2231,6 +2517,7 @@ function setupEventListeners() {
     if (dom.albumArt.getAttribute('src') === placeholderArt) return;
     dom.albumArt.src = placeholderArt;
     dom.ambientBg.style.backgroundImage = '';
+    dom.ambientBg2.style.backgroundImage = '';
     resetAccent();
   });
 
