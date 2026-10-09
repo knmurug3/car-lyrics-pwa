@@ -281,25 +281,95 @@ async function pollCurrentlyPlaying() {
 }
 
 // -------------------------------------------------------------
-// LRCLIB Synced Lyrics API Engine (with Tamil / Regional Cleaning & Multi-Stage Fallback)
+// LRCLIB Synced Lyrics API Engine (with Tanglish / English Romanization)
 // -------------------------------------------------------------
+
+let preferEnglishScript = true;
+
+const TAMIL_VOWELS = {
+  'அ': 'a', 'ஆ': 'aa', 'இ': 'i', 'ஈ': 'ee', 'உ': 'u', 'ஊ': 'oo',
+  'எ': 'e', 'ஏ': 'ae', 'ஐ': 'ai', 'ஒ': 'o', 'ஓ': 'o', 'ஔ': 'au', 'ஃ': 'k'
+};
+
+const TAMIL_CONSONANTS = {
+  'க': 'k', 'ங': 'ng', 'ச': 's', 'ஞ': 'nya', 'ட': 't', 'ண': 'n',
+  'த': 'th', 'ந': 'n', 'ப': 'p', 'ம': 'm', 'ய': 'y', 'ர': 'r',
+  'ல': 'l', 'வ': 'v', 'ழ': 'zh', 'ள': 'l', 'ற': 'r', 'ன': 'n',
+  'ஜ': 'j', 'ஷ': 'sh', 'ஸ': 's', 'ஹ': 'h'
+};
+
+const TAMIL_VOWEL_SIGNS = {
+  'ா': 'aa', 'ி': 'i', 'ீ': 'ee', 'ு': 'u', 'ூ': 'oo',
+  'ெ': 'e', 'ே': 'ae', 'ை': 'ai', 'ொ': 'o', 'ோ': 'o', 'ௌ': 'au',
+  '்': ''
+};
+
+function hasTamilScript(text) {
+  return /[\u0B80-\u0BFF]/.test(text);
+}
+
+function transliterateTamilToEnglish(text) {
+  if (!text) return '';
+  const result = [];
+  const chars = Array.from(text);
+  const n = chars.length;
+  let i = 0;
+
+  while (i < n) {
+    const c = chars[i];
+    if (TAMIL_VOWELS[c]) {
+      result.push(TAMIL_VOWELS[c]);
+    } else if (TAMIL_CONSONANTS[c]) {
+      const base = TAMIL_CONSONANTS[c];
+      if (i + 1 < n && TAMIL_VOWEL_SIGNS[chars[i + 1]] !== undefined) {
+        result.push(base + TAMIL_VOWEL_SIGNS[chars[i + 1]]);
+        i++;
+      } else {
+        result.push(base + 'a');
+      }
+    } else {
+      result.push(c);
+    }
+    i++;
+  }
+
+  // Capitalize beginnings of lines for clean reading
+  const raw = result.join('');
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
 
 function cleanSongTitle(title) {
   if (!title) return '';
   return title
-    // Remove (From "...") or [From "..."] or (feat. ...)
     .replace(/[\(\[\{](?:from|feat|ft|ost|soundtrack|original|tamil|telugu|remastered).*?[\)\]\}]/gi, '')
-    // Remove (with ...) or (reprise)
     .replace(/[\(\[\{](?:with|version|reprise).*?[\)\]\}]/gi, '')
-    // Remove trailing "- From ..." or "- Original Soundtrack"
     .replace(/-\s*(?:from|ost|soundtrack|original|reprise|version).*$/gi, '')
     .trim();
 }
 
 function getPrimaryArtist(artist) {
   if (!artist) return '';
-  // Take first artist before comma, semicolon, or ampersand
   return artist.split(/[,;&]/)[0].trim();
+}
+
+// Chooses the best result from search, strongly prioritizing English/Tanglish
+function pickBestLyrics(results) {
+  if (!Array.isArray(results) || results.length === 0) return null;
+
+  // 1. Synced lyrics already written in English/Latin letters (Tanglish)
+  const englishSynced = results.find(r => r.syncedLyrics && !hasTamilScript(r.syncedLyrics));
+  if (englishSynced) return englishSynced;
+
+  // 2. Any synced lyrics (we will transliterate if needed)
+  const anySynced = results.find(r => r.syncedLyrics);
+  if (anySynced) return anySynced;
+
+  // 3. Plain lyrics in English
+  const englishPlain = results.find(r => r.plainLyrics && !hasTamilScript(r.plainLyrics));
+  if (englishPlain) return englishPlain;
+
+  // 4. Any plain lyrics
+  return results.find(r => r.plainLyrics) || null;
 }
 
 async function fetchLyrics(track, artist, durationSec) {
@@ -313,43 +383,23 @@ async function fetchLyrics(track, artist, durationSec) {
 
   const cleanTitle = cleanSongTitle(track);
   const primaryArtist = getPrimaryArtist(artist);
-  const headers = {
-    'User-Agent': 'CarLyricsPWA/1.0.0 (https://github.com/carlyrics)'
-  };
+  const headers = { 'User-Agent': 'CarLyricsPWA/1.0.0 (https://github.com/carlyrics)' };
 
   let lyricsData = null;
 
-  // Tier 1: Exact match with cleaned metadata
+  // Tier 1: Search by cleaned track and artist
   try {
-    const url = new URL('https://lrclib.net/api/get');
-    url.searchParams.set('track_name', cleanTitle);
-    url.searchParams.set('artist_name', primaryArtist);
-    if (durationSec) url.searchParams.set('duration', durationSec);
-
-    const res = await fetch(url.toString(), { headers });
+    const searchUrl = new URL('https://lrclib.net/api/search');
+    searchUrl.searchParams.set('track_name', cleanTitle);
+    searchUrl.searchParams.set('artist_name', primaryArtist);
+    const res = await fetch(searchUrl.toString(), { headers });
     if (res.ok) {
-      const data = await res.json();
-      if (data && (data.syncedLyrics || data.plainLyrics)) lyricsData = data;
+      const results = await res.json();
+      lyricsData = pickBestLyrics(results);
     }
   } catch (err) {}
 
-  // Tier 2: Search with cleaned track_name & artist_name
-  if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
-    try {
-      const searchUrl = new URL('https://lrclib.net/api/search');
-      searchUrl.searchParams.set('track_name', cleanTitle);
-      searchUrl.searchParams.set('artist_name', primaryArtist);
-      const res = await fetch(searchUrl.toString(), { headers });
-      if (res.ok) {
-        const results = await res.json();
-        if (Array.isArray(results) && results.length > 0) {
-          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
-        }
-      }
-    } catch (err) {}
-  }
-
-  // Tier 3: Search with short title (before any dash) + primary artist
+  // Tier 2: Search with title (before any dash) + artist
   if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
     try {
       const shortTitle = cleanTitle.split('-')[0].trim();
@@ -358,14 +408,12 @@ async function fetchLyrics(track, artist, durationSec) {
       const res = await fetch(searchUrl.toString(), { headers });
       if (res.ok) {
         const results = await res.json();
-        if (Array.isArray(results) && results.length > 0) {
-          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
-        }
+        lyricsData = pickBestLyrics(results);
       }
     } catch (err) {}
   }
 
-  // Tier 4: Fallback search with raw original Spotify track name
+  // Tier 3: Search with raw original Spotify track name
   if (!lyricsData || (!lyricsData.syncedLyrics && !lyricsData.plainLyrics)) {
     try {
       const searchUrl = new URL('https://lrclib.net/api/search');
@@ -373,9 +421,7 @@ async function fetchLyrics(track, artist, durationSec) {
       const res = await fetch(searchUrl.toString(), { headers });
       if (res.ok) {
         const results = await res.json();
-        if (Array.isArray(results) && results.length > 0) {
-          lyricsData = results.find(r => r.syncedLyrics) || results.find(r => r.plainLyrics);
-        }
+        lyricsData = pickBestLyrics(results);
       }
     } catch (err) {}
   }
@@ -393,32 +439,6 @@ async function fetchLyrics(track, artist, durationSec) {
   }
 }
 
-function renderPlainLyrics(plainText) {
-  dom.lyricsContainer.innerHTML = '';
-  const badge = document.createElement('div');
-  badge.style.fontSize = '0.8rem';
-  badge.style.color = 'var(--text-sub)';
-  badge.style.marginBottom = '24px';
-  badge.style.background = 'rgba(255, 255, 255, 0.08)';
-  badge.style.padding = '6px 14px';
-  badge.style.borderRadius = '20px';
-  badge.textContent = '📄 Plain Lyrics Mode (Timestamps unavailable for this track)';
-  dom.lyricsContainer.appendChild(badge);
-
-  const lines = plainText.split('\n');
-  lines.forEach((line) => {
-    const trimmed = line.trim();
-    if (trimmed) {
-      const div = document.createElement('div');
-      div.className = 'lyric-line';
-      div.style.color = 'rgba(255, 255, 255, 0.85)';
-      div.style.fontSize = '1.35rem';
-      div.textContent = trimmed;
-      dom.lyricsContainer.appendChild(div);
-    }
-  });
-}
-
 function parseLRC(lrcText) {
   const lines = lrcText.split('\n');
   const result = [];
@@ -432,16 +452,54 @@ function parseLRC(lrcText) {
       const fractionStr = match[3];
       const fraction = parseFloat(fractionStr) / (fractionStr.length === 3 ? 1000 : 100);
       const timestamp = (minutes * 60) + seconds + fraction;
-      const text = match[4].trim();
+      const rawText = match[4].trim();
 
-      if (text) {
-        result.push({ id: `lyric-${index}`, timestamp, text });
+      if (rawText) {
+        const tanglish = hasTamilScript(rawText) ? transliterateTamilToEnglish(rawText) : rawText;
+        result.push({
+          id: `lyric-${index}`,
+          timestamp,
+          originalText: rawText,
+          tanglishText: tanglish,
+          text: preferEnglishScript ? tanglish : rawText
+        });
       }
     }
   });
 
   return result.sort((a, b) => a.timestamp - b.timestamp);
 }
+
+function renderPlainLyrics(plainText) {
+  dom.lyricsContainer.innerHTML = '';
+  const badge = document.createElement('div');
+  badge.style.fontSize = '0.8rem';
+  badge.style.color = 'var(--text-sub)';
+  badge.style.marginBottom = '24px';
+  badge.style.background = 'rgba(255, 255, 255, 0.08)';
+  badge.style.padding = '6px 14px';
+  badge.style.borderRadius = '20px';
+  badge.textContent = preferEnglishScript ? '📄 Plain Lyrics Mode (Tanglish)' : '📄 Plain Lyrics Mode (Tamil)';
+  dom.lyricsContainer.appendChild(badge);
+
+  const lines = plainText.split('\n');
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed) {
+      const displayLine = (preferEnglishScript && hasTamilScript(trimmed))
+        ? transliterateTamilToEnglish(trimmed)
+        : trimmed;
+
+      const div = document.createElement('div');
+      div.className = 'lyric-line';
+      div.style.color = 'rgba(255, 255, 255, 0.85)';
+      div.style.fontSize = '1.35rem';
+      div.textContent = displayLine;
+      dom.lyricsContainer.appendChild(div);
+    }
+  });
+}
+
 
 function renderLyrics(lyricItems) {
   dom.lyricsContainer.innerHTML = '';
@@ -577,6 +635,23 @@ function hideQrCodeModal() {
 // Event Listeners
 // -------------------------------------------------------------
 function setupEventListeners() {
+  const scriptToggleBtn = document.getElementById('script-toggle-btn');
+  if (scriptToggleBtn) {
+    scriptToggleBtn.addEventListener('click', () => {
+      preferEnglishScript = !preferEnglishScript;
+      scriptToggleBtn.textContent = preferEnglishScript ? '🔤 Tanglish' : '🔤 தமிழ்';
+
+      // Update currently rendered lyrics on screen immediately
+      if (lyrics.length > 0) {
+        lyrics.forEach((item) => {
+          item.text = preferEnglishScript ? item.tanglishText : item.originalText;
+          const el = document.getElementById(item.id);
+          if (el) el.textContent = item.text;
+        });
+      }
+    });
+  }
+
   const copyUriBtn = document.getElementById('copy-uri-btn');
   if (copyUriBtn) {
     copyUriBtn.addEventListener('click', () => {
