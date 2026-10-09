@@ -96,7 +96,8 @@ function registerServiceWorker() {
 // Spotify PKCE Authentication (No backend needed)
 // -------------------------------------------------------------
 function getRedirectUri() {
-  return window.location.origin + window.location.pathname;
+  // Always normalize to origin with trailing slash, regardless of /index.html
+  return window.location.origin.replace(/\/+$/, '') + '/';
 }
 
 async function loginWithSpotify() {
